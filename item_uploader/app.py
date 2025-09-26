@@ -87,13 +87,24 @@ def run() -> None:
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 
-    # ── 사이드바(항상 표시): 초기 설정 + 미리보기 ─────────────────
+        # ── 사이드바(항상 표시): 초기 설정 ─────────────────
     with st.sidebar:
-        st.markdown("### ⚙️ 초기 설정 (세션 전용)")
-        st.caption("비워두면 Secrets/ENV 값을 사용합니다.")
+        st.markdown("### ⚙️ 설정")
+
+        st.markdown(
+            """
+            <div style="font-size:0.9rem; color:#4A4A4A;">
+            샵 복제 시트의 주소를 입력하세요.<br>
+            시트가 없다면
+            <a href="https://docs.google.com/spreadsheets/d/1l5DK-1lNGHFPfl7mbI6sTR_qU1cwHg2-tlBXzY2JhbI/edit#gid=0"
+               target="_blank">템플릿 시트</a>에서 사본을 생성하여 입력해주세요.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         st.text_input(
-            "샵 복제 시트 URL (Main Sheet)",
+            "샵 복제 시트 URL",
             key="OVERRIDE_GOOGLE_SHEET_KEY",
             placeholder="https://docs.google.com/spreadsheets/d/...",
         )
@@ -101,14 +112,9 @@ def run() -> None:
         st.text_input(
             "이미지 호스팅 주소",
             key="IMAGE_HOSTING_URL_STATE",
-            placeholder="예: https://dns.shopeecopy.com/",
+            placeholder="https://test.domain.com/",
         )
 
-        # 미리보기
-        main_key_preview = extract_sheet_id(st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")) or "↩ Defaults"
-        host_preview = st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or "↩ Defaults"
-        st.write(f"Main: **{main_key_preview}**")
-        st.write(f"Image Host: **{host_preview}**")
 
     # ── 멀티테넌트 오버라이드 설치(메인만 오버라이드) ───────────────
     _install_multitenant_override()
