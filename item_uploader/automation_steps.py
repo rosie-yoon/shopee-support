@@ -110,40 +110,48 @@ def run_step_1(sh: gspread.Spreadsheet, ref: gspread.Spreadsheet):
         print("[!] BASIC or MEDIA 시트가 비어 있습니다.")
         return
 
-    # TemplateDict 읽기 (엄격 매칭 + 디버그 로그)
-    # ref가 무엇을 가리키는지와 탭 목록을 먼저 출력
+    # TemplateDict 읽기 (엄격 매칭 + 메인 시트 폴백 + 상세 로그)
+    REF_TEMPLATE_TAB = "TemplateDict"  # 엄격하게 고정 사용
     try:
-        ref_id  = getattr(ref, "id", "?")
-        ref_url = getattr(ref, "url", "(n/a)")
-        print(f"[STEP1][REF] id={ref_id} url={ref_url}")
-        ref_titles = [ws.title for ws in with_retry(lambda: ref.worksheets())]
-        print(f"[STEP1][REF] tabs={ref_titles}")
+        # 어떤 문서를 보고 있는지와 탭 목록 로깅
+        sh_id  = getattr(sh, "id", None);  sh_url  = getattr(sh, "url", "(n/a)")
+        ref_id = getattr(ref, "id", None); ref_url = getattr(ref, "url", "(n/a)")
+        print(f"[STEP1][MAIN] id={sh_id} url={sh_url}")
+        print(f"[STEP1][REF ] id={ref_id} url={ref_url}")
+
+        ref_titles  = [ws.title for ws in with_retry(lambda: ref.worksheets())]
+        main_titles = [ws.title for ws in with_retry(lambda: sh.worksheets())]
+        print(f"[STEP1][REF ] tabs={ref_titles}")
+        print(f"[STEP1][MAIN] tabs={main_titles}")
     except Exception as e:
-        raise RuntimeError(f"[STEP1] 참조 시트 메타 읽기 실패: {e}")
+        raise RuntimeError(f"[STEP1] 시트 메타 읽기 실패: {e}")
 
-    # ENV에 뭐가 들어있든 'TemplateDict'만 엄격하게 사용
-    REF_TEMPLATE_TAB = "TemplateDict"
-    env_tab = get_env("TEMPLATE_DICT_SHEET_NAME", "TemplateDict").strip()
-    if env_tab != REF_TEMPLATE_TAB:
-        print(f"[STEP1][WARN] TEMPLATE_DICT_SHEET_NAME='{env_tab}' (ignored). Using strict '{REF_TEMPLATE_TAB}'.")
+    # 1) 참조 시트에 있으면 그대로 사용
+    if REF_TEMPLATE_TAB in ref_titles:
+        template_dict_ws = safe_worksheet(ref, REF_TEMPLATE_TAB)
+        print(f"[STEP1] Using TemplateDict from REF: '{template_dict_ws.title}'")
 
-    if REF_TEMPLATE_TAB not in ref_titles:
+    # 2) 참조 시트에는 없고, 메인 시트에 있으면 메인에서 폴백 사용
+    elif REF_TEMPLATE_TAB in main_titles:
+        print(f"[STEP1][WARN] '{REF_TEMPLATE_TAB}' 탭이 참조 시트에는 없고 메인 시트에만 존재 → 메인 시트 폴백 사용")
+        template_dict_ws = safe_worksheet(sh, REF_TEMPLATE_TAB)
+
+    # 3) 둘 다 없으면 명확한 에러
+    else:
         raise RuntimeError(
-            f"[STEP1] 참조 시트는 열렸지만 '{REF_TEMPLATE_TAB}' 탭이 없습니다. "
-            f"실제 탭들={ref_titles}"
+            f"[STEP1] '{REF_TEMPLATE_TAB}' 탭을 찾지 못했습니다. "
+            f"REF tabs={ref_titles} / MAIN tabs={main_titles}"
         )
-
-    template_dict_ws = safe_worksheet(ref, REF_TEMPLATE_TAB)
-    print(f"[STEP1] Using TemplateDict worksheet title = '{template_dict_ws.title}'")
 
     template_vals = with_retry(lambda: template_dict_ws.get_all_values()) or []
     if not template_vals or len(template_vals) < 2:
         raise RuntimeError("[STEP1] TemplateDict 탭이 비어 있거나 유효한 헤더/데이터가 없습니다.")
 
     template_dict = {
-        header_key(row[0]): [str(x or "").strip() for x in row[1:]]
-        for row in template_vals[1:] if (row[0] or "").strip()
+        header_key(row[0]): [str(x or '').strip() for x in row[1:]]
+        for row in template_vals[1:] if (row[0] or '').strip()
     }
+
 
 
     # MEDIA 헤더 파서
