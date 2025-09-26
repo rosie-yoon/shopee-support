@@ -22,7 +22,7 @@ import pandas as pd
 from .utils_common import (
     load_env, with_retry, safe_worksheet, header_key, top_of_category,
     get_tem_sheet_name, get_env, get_bool_env, hex_to_rgb01, strip_category_id,
-    open_ref_by_env,
+    open_ref_by_env, 
 )
 
 # ==============================================================================
@@ -92,13 +92,25 @@ def _append_failures(sh, rows: List[List[str]]):
 def run_step_1(sh: gspread.Spreadsheet, ref: gspread.Spreadsheet):
     """Step 1: BASIC+MEDIA -> TEM_OUTPUT 생성 (+ SALES로 SKU/Parent SKU 매핑)"""
     print("\n[ Automation ] Starting Step 1: Build TEM_OUTPUT...")
-    ref = _ensure_ref(ref)
+
+    # ✅ 전달된 ref 인자를 신뢰하지 않고 항상 '참조 시트'를 강제 오픈
+    ref = open_ref_by_env()
+
+    # 어떤 문서를 보고 있는지 확인 (디버그)
+    sh_id  = getattr(sh, "id", None);  sh_url  = getattr(sh, "url", "(n/a)")
+    ref_id = getattr(ref, "id", None); ref_url = getattr(ref, "url", "(n/a)")
+    print(f"[STEP1][MAIN] id={sh_id} url={sh_url}")
+    print(f"[STEP1][REF ] id={ref_id} url={ref_url}")
+    if sh_id and ref_id and sh_id == ref_id:
+        raise RuntimeError(
+            "[STEP1] 참조 시트가 메인 시트와 동일합니다. "
+            "⇒ REFERENCE_SHEET_KEY가 메인 시트 키로 설정되었는지 확인하세요."
+        )
 
     basic_header = int(get_env("BASIC_HEADER_ROW", "2"))
     basic_first  = int(get_env("BASIC_FIRST_DATA_ROW", "3"))
     media_header = int(get_env("MEDIA_HEADER_ROW", "2"))
     media_first  = int(get_env("MEDIA_FIRST_DATA_ROW", "6"))
-    ref_sheet    = get_env("TEMPLATE_DICT_SHEET_NAME", "TemplateDict")
     tem_name     = get_tem_sheet_name()
 
     # BASIC / MEDIA 읽기
@@ -110,211 +122,27 @@ def run_step_1(sh: gspread.Spreadsheet, ref: gspread.Spreadsheet):
         print("[!] BASIC or MEDIA 시트가 비어 있습니다.")
         return
 
-    # TemplateDict 읽기 (엄격 매칭 + 메인 시트 폴백 + 상세 로그)
-    REF_TEMPLATE_TAB = "TemplateDict"  # 엄격하게 고정 사용
-    try:
-        # 어떤 문서를 보고 있는지와 탭 목록 로깅
-        sh_id  = getattr(sh, "id", None);  sh_url  = getattr(sh, "url", "(n/a)")
-        ref_id = getattr(ref, "id", None); ref_url = getattr(ref, "url", "(n/a)")
-        print(f"[STEP1][MAIN] id={sh_id} url={sh_url}")
-        print(f"[STEP1][REF ] id={ref_id} url={ref_url}")
-
-        ref_titles  = [ws.title for ws in with_retry(lambda: ref.worksheets())]
-        main_titles = [ws.title for ws in with_retry(lambda: sh.worksheets())]
-        print(f"[STEP1][REF ] tabs={ref_titles}")
-        print(f"[STEP1][MAIN] tabs={main_titles}")
-    except Exception as e:
-        raise RuntimeError(f"[STEP1] 시트 메타 읽기 실패: {e}")
-
-    # 1) 참조 시트에 있으면 그대로 사용
-    if REF_TEMPLATE_TAB in ref_titles:
-        template_dict_ws = safe_worksheet(ref, REF_TEMPLATE_TAB)
-        print(f"[STEP1] Using TemplateDict from REF: '{template_dict_ws.title}'")
-
-    # 2) 참조 시트에는 없고, 메인 시트에 있으면 메인에서 폴백 사용
-    elif REF_TEMPLATE_TAB in main_titles:
-        print(f"[STEP1][WARN] '{REF_TEMPLATE_TAB}' 탭이 참조 시트에는 없고 메인 시트에만 존재 → 메인 시트 폴백 사용")
-        template_dict_ws = safe_worksheet(sh, REF_TEMPLATE_TAB)
-
-    # 3) 둘 다 없으면 명확한 에러
-    else:
+    # ✅ TemplateDict: 참조 시트에서만 엄격 매칭 (폴백 없음)
+    REF_TEMPLATE_TAB = "TemplateDict"
+    ref_titles = [ws.title for ws in with_retry(lambda: ref.worksheets())]
+    print(f"[STEP1][REF] tabs={ref_titles}")
+    if REF_TEMPLATE_TAB not in ref_titles:
         raise RuntimeError(
-            f"[STEP1] '{REF_TEMPLATE_TAB}' 탭을 찾지 못했습니다. "
-            f"REF tabs={ref_titles} / MAIN tabs={main_titles}"
+            f"[STEP1] 참조 시트는 열렸지만 '{REF_TEMPLATE_TAB}' 탭이 없습니다. "
+            f"실제 탭들={ref_titles}"
         )
+
+    template_dict_ws = safe_worksheet(ref, REF_TEMPLATE_TAB)
+    print(f"[STEP1] Using TemplateDict worksheet title = '{template_dict_ws.title}'")
 
     template_vals = with_retry(lambda: template_dict_ws.get_all_values()) or []
     if not template_vals or len(template_vals) < 2:
         raise RuntimeError("[STEP1] TemplateDict 탭이 비어 있거나 유효한 헤더/데이터가 없습니다.")
 
     template_dict = {
-        header_key(row[0]): [str(x or '').strip() for x in row[1:]]
-        for row in template_vals[1:] if (row[0] or '').strip()
+        header_key(row[0]): [str(x or "").strip() for x in row[1:]]
+        for row in template_vals[1:] if (row[0] or "").strip()
     }
-
-
-
-    # MEDIA 헤더 파서
-    class MediaHeader:
-        def __init__(self):
-            self.pid = -1; self.pname = -1; self.category = -1; self.cover = -1
-            self.item_images: List[int] = []; self.var_label = -1
-            self.opt_name_cols: List[int] = []; self.opt_img_cols: List[int] = []
-
-    def parse_media_header_row(header_row: List[str]) -> MediaHeader:
-        h = MediaHeader()
-        keys = [header_key(x) for x in header_row]
-        h.pid      = _find_col_index(keys, "productid",["pid","itemid","ettitleproductid"])
-        h.pname    = _find_col_index(keys, "productname", ["itemname","name"])
-        h.category = _find_col_index(keys, "category")
-        h.cover    = _find_col_index(keys, "coverimage", ["coverimg"])
-        h.var_label= _find_col_index(keys, "variationname1", ["variationname","variation"])
-        for i, raw in enumerate(header_row):
-            if header_key(raw).startswith("itemimage"): h.item_images.append(i)
-        patt = re.compile(r"^option(\d+)name$")
-        for idx, raw in enumerate(header_row):
-            m = patt.match(header_key(raw))
-            if not m: continue
-            n = m.group(1)
-            h.opt_name_cols.append(idx)
-            img_idx = next((j for j, r in enumerate(header_row) if header_key(r)==f"option{n}image"), -1)
-            h.opt_img_cols.append(img_idx)
-        return h
-
-    media_hdr = parse_media_header_row(media_vals[media_header - 1])
-
-    # SALES에서 ParentSKU/ChildSKU 매핑
-    parent_sku_map: Dict[str, str] = {}
-    sku_by_pid_opt: Dict[Tuple[str, str], str] = {}
-    try:
-        sales_ws = safe_worksheet(sh, "SALES")
-        sales_vals = with_retry(lambda: sales_ws.get_all_values()) or []
-        if sales_vals:
-            hdr = sales_vals[0]
-            pid_idx      = _pick_index_by_candidates(hdr, ["product id","pid","item id","et_title_product_id"])
-            psku_idx     = _pick_index_by_candidates(hdr, ["parent sku","parent_sku","seller sku","seller_sku","et_title_parent_sku"])
-            var_name_idx = _pick_index_by_candidates(hdr, ["variation name","option name","option 1 name","variation option","variation","option"])
-            sku_idx      = _pick_index_by_candidates(hdr, ["sku","variation sku","child sku","option sku","seller_child_sku","et_title_child_sku"])
-            if pid_idx >= 0:
-                for r in range(1, len(sales_vals)):
-                    row = sales_vals[r]
-                    pid = (row[pid_idx] if pid_idx < len(row) else "").strip()
-                    if pid and psku_idx >= 0:
-                        parent_sku_map[pid] = (row[psku_idx] if psku_idx < len(row) else "").strip()
-                    if pid and var_name_idx >= 0 and sku_idx >= 0:
-                        opt_name = (row[var_name_idx] if var_name_idx < len(row) else "").strip()
-                        csku     = (row[sku_idx]      if sku_idx      < len(row) else "").strip()
-                        if opt_name and csku:
-                            key = (pid, re.sub(r"\s+", " ", opt_name.lower()))
-                            sku_by_pid_opt[key] = csku
-    except Exception:
-        pass  # SALES 없어도 진행
-
-    # MEDIA → TEM_OUTPUT 빌드
-    buckets: Dict[str, Dict[str, List]] = {}   # top_norm -> {"headers":[], "pids":[], "rows":[]}
-    failures: List[List[str]] = []
-
-    def set_if_exists(headers: List[str], arr: List[str], key: str, value: str):
-        idx = _find_col_index([header_key(h) for h in headers], key)
-        if idx >= 0 and idx < len(arr):
-            arr[idx] = value
-
-    for r in range(media_first - 1, len(media_vals)):
-        row = media_vals[r]
-        if not row:
-            continue
-
-        pid   = (row[media_hdr.pid] if media_hdr.pid >= 0 and media_hdr.pid < len(row) else "").strip()
-        pname = (row[media_hdr.pname] if media_hdr.pname >= 0 and media_hdr.pname < len(row) else "").strip()
-        cat   = (row[media_hdr.category] if media_hdr.category >= 0 and media_hdr.category < len(row) else "").strip()
-        cover = (row[media_hdr.cover] if media_hdr.cover >= 0 and media_hdr.cover < len(row) else "").strip()
-        if not pid or not cat:
-            continue
-
-        item_imgs = []
-        for idx in (media_hdr.item_images or []):
-            if 0 <= idx < len(row):
-                v = (row[idx] or "").strip()
-                if v: item_imgs.append(v)
-
-        options: List[Tuple[str, str]] = []
-        for i, name_col in enumerate(media_hdr.opt_name_cols):
-            opt_name = (row[name_col] if name_col < len(row) else "").strip()
-            if not opt_name:
-                continue
-            img_val = ""
-            if i < len(media_hdr.opt_img_cols) and media_hdr.opt_img_cols[i] >= 0:
-                img_idx = media_hdr.opt_img_cols[i]
-                img_val = (row[img_idx] if img_idx < len(row) else "").strip()
-            options.append((opt_name, img_val))
-
-        top_norm = header_key(top_of_category(cat) or "")
-        headers = template_dict.get(top_norm)
-        if not headers:
-            failures.append([pid, cat, pname, "TEMPLATE_TOPLEVEL_NOT_FOUND", f"top={top_of_category(cat)}"])
-            continue
-
-        psku_val = parent_sku_map.get(pid, "")
-
-        if not options:
-            arr = [""] * len(headers)
-            set_if_exists(headers, arr, "category", cat)
-            set_if_exists(headers, arr, "product name", pname)
-            set_if_exists(headers, arr, "cover image", cover)
-            for k, url in enumerate(item_imgs, start=1):
-                if url: set_if_exists(headers, arr, f"item image {k}", url)
-            if psku_val: set_if_exists(headers, arr, "parent sku", psku_val)
-            b = buckets.setdefault(top_norm, {"headers": headers, "pids": [], "rows": []})
-            b["pids"].append([pid]); b["rows"].append(arr)
-        else:
-            var_label_val = (row[media_hdr.var_label] if media_hdr.var_label >= 0 else "") or "color"
-            for (opt_name_raw, opt_img) in options:
-                arr = [""] * len(headers)
-                set_if_exists(headers, arr, "category", cat)
-                set_if_exists(headers, arr, "product name", pname)
-                set_if_exists(headers, arr, "variation name1", var_label_val)
-                set_if_exists(headers, arr, "option for variation 1", opt_name_raw)
-                if cover: set_if_exists(headers, arr, "cover image", cover)
-                if opt_img: set_if_exists(headers, arr, "image per variation", opt_img)
-                for k, url in enumerate(item_imgs, start=1):
-                    if url: set_if_exists(headers, arr, f"item image {k}", url)
-                if psku_val: set_if_exists(headers, arr, "parent sku", psku_val)
-
-                opt_key = (pid, re.sub(r"\s+", " ", opt_name_raw.lower()))
-                csku_val = sku_by_pid_opt.get(opt_key, "")
-                if csku_val:
-                    set_if_exists(headers, arr, "sku", csku_val)
-                else:
-                    failures.append([pid, cat, pname, "SKU_MATCH_NOT_FOUND", f"opt={opt_name_raw}"])
-
-                b = buckets.setdefault(top_norm, {"headers": headers, "pids": [], "rows": []})
-                b["pids"].append([pid]); b["rows"].append(arr)
-
-    out_matrix: List[List[str]] = []
-    for _, pack in buckets.items():
-        out_matrix.append([""] + pack["headers"])
-        for pid_row, data_row in zip(pack["pids"], pack["rows"]):
-            out_matrix.append(pid_row + data_row)
-
-    if out_matrix:
-        try:
-            tem_ws = safe_worksheet(sh, tem_name)
-            with_retry(lambda: tem_ws.clear())
-        except Exception:
-            tem_ws = with_retry(lambda: sh.add_worksheet(title=tem_name, rows=5000, cols=200))
-
-        max_cols = max(len(r) for r in out_matrix)
-        end_a1 = rowcol_to_a1(len(out_matrix), max_cols)
-        with_retry(lambda: tem_ws.resize(rows=len(out_matrix) + 10, cols=max_cols + 10))
-        with_retry(lambda: tem_ws.update(values=out_matrix, range_name=f"A1:{end_a1}"))
-
-    if failures:
-        _append_failures(sh, failures)
-
-    print("========== STEP 1 RESULT ==========")
-    print(f"TEM 생성 행수: {max(0, len(out_matrix) - len(buckets)):,}")
-    print(f"Failures 기록: {len(failures):,}")
-    print("Step 1: Build TEM_OUTPUT Finished.")
 
 # ==============================================================================
 # STEP 2: Mandatory 기본값 채우기 (+ 색칠)

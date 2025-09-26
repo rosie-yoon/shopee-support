@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-utils_common.py (CLEAN, final)
-- Cloud/Local 환경에서 안정적으로 Google Sheets 인증/접근하도록 정리한 버전
+utils_common.py (CLEAN, strict)
+- Cloud/Local 환경에서 안정적으로 Google Sheets 인증/접근
 - 우선순위: Streamlit Secrets(service account) → ENV(JSON 문자열) → 로컬 OAuth(client_secret.json)
-- 기존 유틸/인터페이스 최대한 유지
+- open_ref_by_env(): '참조 시트'만 연다 (폴백/None 금지)
 """
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from dotenv import load_dotenv
 # -----------------------------
 # 환경변수 로딩
 # -----------------------------
-
 def load_env():
     """여러 위치에서 .env 탐색하여 로드"""
     base = Path(__file__).resolve().parent
@@ -140,7 +139,6 @@ def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> 
     val: Optional[str] = None
     try:
         import streamlit as st  # type: ignore
-        # secrets 우선 (예: GOOGLE_SHEET_KEY)
         if primary_env in st.secrets:
             val = str(st.secrets.get(primary_env, "") or "").strip()
         elif fallback_env and fallback_env in st.secrets:
@@ -183,7 +181,7 @@ def open_sheet_by_env():
             authorized_user_filename=str(token_path),
         )
 
-    # 3) 시트 키 해석 (URL/키 모두 허용)
+    # 3) 시트 키 해석
     sheet_key = _resolve_sheet_key(
         primary_env="GOOGLE_SHEET_KEY",
         fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
@@ -192,13 +190,18 @@ def open_sheet_by_env():
 
 
 def open_ref_by_env():
+    """
+    STRICT: REFERENCE_SHEET_KEY로 지정된 '참조 시트'만 연다.
+    - 성공: Spreadsheet 반환
+    - 실패: 이유 포함 예외 발생 (None/폴백 금지)
+    """
     load_env()
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
+        here = Path(__file__).resolve().parent
+        cred_path = here / "client_secret.json"
+        token_path = here / "token.json"
         try:
-            here = Path(__file__).resolve().parent
-            cred_path = here / "client_secret.json"
-            token_path = here / "token.json"
             gc = gspread.oauth(
                 credentials_filename=str(cred_path),
                 authorized_user_filename=str(token_path),
@@ -206,23 +209,17 @@ def open_ref_by_env():
         except Exception as e:
             raise RuntimeError(f"[REF] 인증 실패: {e}") from e
 
-    ref_key = None
-    ref_err = None
+    ref_key = _resolve_sheet_key(
+        primary_env="REFERENCE_SHEET_KEY",
+        fallback_env="REFERENCE_SPREADSHEET_ID",
+    )
     try:
-        ref_key = _resolve_sheet_key("REFERENCE_SHEET_KEY", "REFERENCE_SPREADSHEET_ID")
         return gc.open_by_key(ref_key)
     except Exception as e:
-        ref_err = e
-
-    try:
-        main_key = _resolve_sheet_key("GOOGLE_SHEET_KEY", "GOOGLE_SHEETS_SPREADSHEET_ID")
-        return gc.open_by_key(main_key)
-    except Exception as main_err:
         raise RuntimeError(
-            f"[REF] 참조 시트(open_by_key={ref_key})와 메인 시트 둘 다 열기 실패 "
-            f"(ref_error={ref_err}, main_error={main_err}). "
-            f"→ 시트 키, 공유 권한(서비스계정), Secrets 저장 여부를 확인하세요."
-        ) from main_err
+            f"[REF] REFERENCE_SHEET_KEY로 참조 시트를 열지 못했습니다 (key={ref_key}). "
+            f"→ 키 값/서비스계정 공유 권한을 확인하세요. 원인: {e}"
+        ) from e
 
 
 def safe_worksheet(sh, name: str):
