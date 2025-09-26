@@ -160,7 +160,7 @@ def run() -> None:
                 )
 
                 st.toast("설정이 적용되었습니다 ✅")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(str(e))
 
