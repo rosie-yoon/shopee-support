@@ -1,11 +1,14 @@
-# Main App & UI
-streamlit
-pillow
-tqdm
+# --- Main App & UI ---
+streamlit>=1.33,<1.39
+pillow>=10.2
+tqdm>=4.66
 
-# Item Uploader Dependencies
-gspread
-python-dotenv
-pandas
+# --- Google Sheets / Auth ---
+gspread>=5.12
+google-auth>=2.29,<3
+google-auth-oauthlib>=1.2,<2
+python-dotenv>=1.0
 
-openpyxl==3.0.10
+# --- Data / Excel ---
+pandas>=2.2,<2.3
+openpyxl>=3.1.2,<3.2
