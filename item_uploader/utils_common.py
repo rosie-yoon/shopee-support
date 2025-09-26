@@ -107,7 +107,7 @@ def with_retry(fn: Callable, retries: int = 3, delay: float = 2.0):
         raise last_err
 
 
-def _service_account_from_streamlit_or_env) -> Optional[gspread.Client]:
+def _service_account_from_streamlit_or_env() -> Optional[gspread.Client]:
     """Streamlit Secrets 또는 ENV의 서비스계정 JSON으로 gspread 클라이언트를 생성.
     둘 다 없으면 None 반환.
     """
@@ -164,7 +164,11 @@ def open_sheet_by_env():
     키 이름 호환: GOOGLE_SHEET_KEY → (fallback) GOOGLE_SHEETS_SPREADSHEET_ID
     """
     load_env()
+
+    # 1) 인증: 서비스계정 우선
     gc = _service_account_from_streamlit_or_env()
+
+    # 2) 로컬 OAuth 폴백
     if gc is None:
         here = Path(__file__).resolve().parent
         cred_path = here / "client_secret.json"
@@ -174,6 +178,7 @@ def open_sheet_by_env():
             authorized_user_filename=str(token_path),
         )
 
+    # 3) 시트 키 해석 (URL/키 모두 허용)
     sheet_key = _resolve_sheet_key(
         primary_env="GOOGLE_SHEET_KEY",
         fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
@@ -182,8 +187,12 @@ def open_sheet_by_env():
 
 
 def open_ref_by_env():
-    """레퍼런스 시트(선택)를 연다. 없으면 None 반환."""
+    """레퍼런스 시트(선택)를 연다. 없으면 None 반환.
+    키 이름 호환: REFERENCE_SHEET_KEY → (fallback) REFERENCE_SPREADSHEET_ID
+    """
     load_env()
+
+    # 인증 재사용
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
         here = Path(__file__).resolve().parent
@@ -195,8 +204,10 @@ def open_ref_by_env():
                 authorized_user_filename=str(token_path),
             )
         except Exception:
+            # 레퍼런스 시트는 optional. 인증 실패 시 None 처리
             return None
 
+    # 키가 없으면 optional로 간주하고 None
     try:
         ref_key = _resolve_sheet_key(
             primary_env="REFERENCE_SHEET_KEY",
