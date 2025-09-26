@@ -29,6 +29,22 @@ _log_versions()
 
 
 # ------------------------------------------------------------
+# 쿼리스트링 호환 헬퍼 (신/구 API 모두 지원)
+# ------------------------------------------------------------
+def set_query_params(**kwargs):
+    try:
+        st.query_params.update(kwargs)  # Streamlit ≥ 1.36
+    except Exception:
+        st.experimental_set_query_params(**kwargs)  # 구버전 백업
+
+def get_query_params():
+    try:
+        return dict(st.query_params)  # Streamlit ≥ 1.36
+    except Exception:
+        return st.experimental_get_query_params()  # 구버전 백업
+
+
+# ------------------------------------------------------------
 # 멀티 테넌트 오버라이드 (메인 시트만)
 #  utils_common._resolve_sheet_key에 세션 오버라이드 몽키패치
 # ------------------------------------------------------------
@@ -41,7 +57,7 @@ def _install_multitenant_override():
         세션에서 '메인 시트 키/URL'만 오버라이드.
         - Reference 시트는 오버라이드하지 않음(STRICT).
         """
-        main_raw = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "").strip()
+        main_raw = (st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY") or "").strip()
 
         def _as_key(raw: str) -> Optional[str]:
             if not raw:
@@ -77,27 +93,27 @@ def run() -> None:
         "OVERRIDE_GOOGLE_SHEET_KEY": "",
         # 이미지 호스팅 주소(세션 우선)
         "IMAGE_HOSTING_URL_STATE": get_env("IMAGE_HOSTING_URL"),
-        # 사이드바 입력값 보관(적용 버튼 누르기 전 임시값)
-        "OVERRIDE_GOOGLE_SHEET_KEY_INPUT": "",
-        "IMAGE_HOSTING_URL_INPUT": "",
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 
     # ── 딥링크에서 자동 복원(최초 1회 입력 목적) ────────────────────
-    params = st.experimental_get_query_params()
+    params = get_query_params()
     if not st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY") and params.get("main"):
-        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = params["main"][0]
+        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = params["main"][0] if isinstance(params["main"], list) else params["main"]
     if not st.session_state.get("IMAGE_HOSTING_URL_STATE") and params.get("img"):
-        st.session_state["IMAGE_HOSTING_URL_STATE"] = params["img"][0].rstrip("/")
+        raw_img = params["img"][0] if isinstance(params["img"], list) else params["img"]
+        st.session_state["IMAGE_HOSTING_URL_STATE"] = (raw_img or "").rstrip("/")
 
-    # 사이드바 입력 초기값 동기화 (첫 렌더링 시 빈 값이면 현재 설정을 프리필)
-    if not st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"]:
-        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
-    if not st.session_state["IMAGE_HOSTING_URL_INPUT"]:
-        st.session_state["IMAGE_HOSTING_URL_INPUT"] = (
-            st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
-        )
+    # 사이드바 입력 위젯 기본값은 session_state에만 세팅 (value= 사용 금지)
+    st.session_state.setdefault(
+        "OVERRIDE_GOOGLE_SHEET_KEY_INPUT",
+        st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
+    )
+    st.session_state.setdefault(
+        "IMAGE_HOSTING_URL_INPUT",
+        st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
+    )
 
     # ── 사이드바(항상 표시): 최소 설정 + 적용 버튼 ────────────────
     with st.sidebar:
@@ -115,19 +131,17 @@ def run() -> None:
         )
 
         st.markdown('<div class="sb-label">샵 복제 시트 URL</div>', unsafe_allow_html=True)
-        main_input = st.text_input(
+        st.text_input(
             "샵 복제 시트 URL",
             key="OVERRIDE_GOOGLE_SHEET_KEY_INPUT",
-            value=st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", ""),
             placeholder="https://docs.google.com/spreadsheets/d/...",
             label_visibility="collapsed",
         )
 
         st.markdown('<div class="sb-label">이미지 호스팅 주소</div>', unsafe_allow_html=True)
-        host_input = st.text_input(
+        st.text_input(
             "이미지 호스팅 주소",
             key="IMAGE_HOSTING_URL_INPUT",
-            value=st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or "",
             placeholder="https://test.domain.com/",
             label_visibility="collapsed",
         )
@@ -135,7 +149,7 @@ def run() -> None:
         if st.button("적용", type="primary"):
             try:
                 # 시트 URL/키 정규화 (비우면 오버라이드 해제 → Defaults 사용)
-                raw = (main_input or "").strip()
+                raw = (st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] or "").strip()
                 if raw:
                     sid = extract_sheet_id(raw)
                     if not sid:
@@ -145,7 +159,7 @@ def run() -> None:
                     st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
 
                 # 이미지 호스팅 주소 정규화 (비우면 기본값 유지)
-                host = (host_input or "").strip()
+                host = (st.session_state["IMAGE_HOSTING_URL_INPUT"] or "").strip()
                 if host:
                     if not (host.startswith("http://") or host.startswith("https://")):
                         raise ValueError("이미지 호스팅 주소는 http(s):// 로 시작해야 합니다.")
@@ -153,14 +167,14 @@ def run() -> None:
                 else:
                     st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
 
-                # 딥링크 저장 → 북마크/재접속 시 자동 복원
-                st.experimental_set_query_params(
+                # 딥링크 저장 → 북마크/재접속 시 자동 복원 (신/구 API 호환)
+                set_query_params(
                     main=st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"],
                     img=st.session_state["IMAGE_HOSTING_URL_STATE"],
                 )
 
                 st.toast("설정이 적용되었습니다 ✅")
-                st.rerun()
+                st.rerun()  # 최신 API
             except Exception as e:
                 st.error(str(e))
 
