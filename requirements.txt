@@ -7,6 +7,5 @@ tqdm
 gspread
 python-dotenv
 pandas
-gspread-formatting
-xlsxwriter
+
 openpyxl==3.0.10
