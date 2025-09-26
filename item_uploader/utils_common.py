@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-utils_common.py (CLEAN)
+utils_common.py (CLEAN, final)
 - Cloud/Local 환경에서 안정적으로 Google Sheets 인증/접근하도록 정리한 버전
 - 우선순위: Streamlit Secrets(service account) → ENV(JSON 문자열) → 로컬 OAuth(client_secret.json)
 - 기존 유틸/인터페이스 최대한 유지
@@ -12,7 +12,7 @@ import re
 import time
 import json
 from pathlib import Path
-from typing import Optional, Dict, Callable, List  # ★ List 추가
+from typing import Optional, Dict, Callable, List
 
 import gspread
 from gspread.exceptions import WorksheetNotFound
@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 # -----------------------------
 # 환경변수 로딩
 # -----------------------------
+
 def load_env():
     """여러 위치에서 .env 탐색하여 로드"""
     base = Path(__file__).resolve().parent
@@ -94,6 +95,7 @@ def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = N
 # -----------------------------
 # gspread 인증/시트 접근
 # -----------------------------
+
 def with_retry(fn: Callable, retries: int = 3, delay: float = 2.0):
     """API 요청 재시도 래퍼"""
     last_err = None
@@ -134,9 +136,11 @@ def _service_account_from_streamlit_or_env() -> Optional[gspread.Client]:
 
 def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> str:
     """시트 키를 secrets/ENV에서 해석. URL/키 모두 허용."""
+    # Streamlit secrets → ENV 순서로 조회
     val: Optional[str] = None
     try:
         import streamlit as st  # type: ignore
+        # secrets 우선 (예: GOOGLE_SHEET_KEY)
         if primary_env in st.secrets:
             val = str(st.secrets.get(primary_env, "") or "").strip()
         elif fallback_env and fallback_env in st.secrets:
@@ -152,6 +156,7 @@ def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> 
     if not val:
         raise RuntimeError(f"{primary_env} (또는 {fallback_env}) 가 secrets/ENV에 설정되어 있지 않습니다.")
 
+    # URL or raw key 지원
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9\-_]+)", val)
     return m.group(1) if m else val
 
@@ -187,39 +192,53 @@ def open_sheet_by_env():
 
 
 def open_ref_by_env():
-    """레퍼런스 시트(선택)를 연다. 없으면 None 반환.
-    키 이름 호환: REFERENCE_SHEET_KEY → (fallback) REFERENCE_SPREADSHEET_ID
+    """레퍼런스 시트(REFERENCE_SHEET_KEY)를 열되,
+    - 실패하면 메인 시트(GOOGLE_SHEET_KEY)로 폴백
+    - 둘 다 실패하면 명확한 이유를 포함한 예외를 던진다
     """
     load_env()
 
-    # 인증 재사용
+    # 인증 확보
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
-        here = Path(__file__).resolve().parent
-        cred_path = here / "client_secret.json"
-        token_path = here / "token.json"
         try:
+            here = Path(__file__).resolve().parent
+            cred_path = here / "client_secret.json"
+            token_path = here / "token.json"
             gc = gspread.oauth(
                 credentials_filename=str(cred_path),
                 authorized_user_filename=str(token_path),
             )
-        except Exception:
-            # 레퍼런스 시트는 optional. 인증 실패 시 None 처리
-            return None
+        except Exception as e:
+            raise RuntimeError(f"[REF] 인증 실패: {e}") from e
 
-    # 키가 없으면 optional로 간주하고 None
+    ref_key = None
+    ref_err = None
+
+    # 1) 참조 시트 시도
     try:
         ref_key = _resolve_sheet_key(
             primary_env="REFERENCE_SHEET_KEY",
             fallback_env="REFERENCE_SPREADSHEET_ID",
         )
-    except Exception:
-        return None
-
-    try:
         return gc.open_by_key(ref_key)
-    except Exception:
-        return None
+    except Exception as e:
+        ref_err = e  # 저장해 두고 폴백 시도
+
+    # 2) 메인 시트 폴백
+    try:
+        main_key = _resolve_sheet_key(
+            primary_env="GOOGLE_SHEET_KEY",
+            fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
+        )
+        return gc.open_by_key(main_key)
+    except Exception as main_err:
+        # 둘 다 실패 → 이유를 함께 명확히 알린다
+        raise RuntimeError(
+            f"[REF] 참조 시트(open_by_key={ref_key})와 메인 시트 둘 다 열기 실패 "
+            f"(ref_error={ref_err}, main_error={main_err}). "
+            f"→ 시트 키, 공유 권한(서비스계정), Secrets 저장 여부를 확인하세요."
+        ) from main_err
 
 
 def safe_worksheet(sh, name: str):
@@ -231,9 +250,20 @@ def safe_worksheet(sh, name: str):
         raise
 
 
+def get_or_create_worksheet(sh, name: str, rows: int = 100, cols: int = 26):
+    """워크시트가 없으면 생성하여 반환"""
+    if not sh:
+        raise ValueError(f"Spreadsheet object is not valid. Cannot get or create worksheet '{name}'.")
+    try:
+        return with_retry(lambda: sh.worksheet(name))
+    except WorksheetNotFound:
+        return with_retry(lambda: sh.add_worksheet(title=name, rows=rows, cols=cols))
+
+
 # -----------------------------
 # 문자열/헤더 정규화
 # -----------------------------
+
 def norm(s: str) -> str:
     return (
         str(s or "")
@@ -277,6 +307,7 @@ def sheet_link(sid: str) -> str:
 # -----------------------------
 # 카테고리 관련 유틸
 # -----------------------------
+
 def strip_category_id(cat: str) -> str:
     """ '101814 - Home & Living/...' -> 'Home & Living/...' """
     s = str(cat or "")
@@ -300,5 +331,6 @@ def top_of_category(cat: str) -> Optional[str]:
 # -----------------------------
 # TEM 시트명
 # -----------------------------
+
 def get_tem_sheet_name() -> str:
     return get_env("TEM_OUTPUT_SHEET_NAME", "TEM_OUTPUT")
