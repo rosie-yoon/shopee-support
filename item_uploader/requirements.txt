@@ -1,0 +1,6 @@
+gspread
+python-dotenv
+streamlit
+pandas
+gspread-formatting
+xlsxwriter

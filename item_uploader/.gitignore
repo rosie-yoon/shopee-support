@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+tem-uploader/.env
+tem-uploader/service_account.json
+logs/
+data/
