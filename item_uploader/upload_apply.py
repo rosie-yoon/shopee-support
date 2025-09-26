@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from .utils_common import open_sheet_by_env, safe_worksheet, with_retry
 
 # ======================================================
-# XLSX 파싱 안정화 (Shopee/엑셀 시트뷰 불일치 대응 클린본)
+# XLSX 파싱 안정화 (Shopee/엑셀 시트뷰 불일치 대응 + 숨김행/메타 안전 처리)
 # ======================================================
 
 def _sanitize_xlsx_for_openpyxl(file_bytes: bytes) -> BytesIO:
@@ -60,82 +60,106 @@ def _sanitize_xlsx_for_openpyxl(file_bytes: bytes) -> BytesIO:
         return BytesIO(file_bytes)
 
 
-def _read_with_openpyxl(sanitized_bio: BytesIO) -> List[List[str]]:
-    """정리된 바이트로 openpyxl을 이용해 보이는 값(data_only=True)만 읽는다."""
+# ------------------------
+# robust openpyxl / pandas
+# ------------------------
+
+def _count_nonempty_cells(ws, max_rows: int = 500, max_cols: int = 200) -> int:
+    """시트 앞쪽 일부에서 non-empty 셀 수를 세어 데이터가 가장 많은 시트를 고른다."""
+    rows = min(ws.max_row or 0, max_rows)
+    cols = min(ws.max_column or 0, max_cols)
+    cnt = 0
+    for r in ws.iter_rows(min_row=1, max_row=rows, min_col=1, max_col=cols, values_only=True):
+        for c in r:
+            if c not in (None, '', ' '):
+                cnt += 1
+    return cnt
+
+
+def _read_with_openpyxl(sanitized_bio: BytesIO, debug: bool = False) -> List[List[str]]:
+    """정리된 바이트로 openpyxl을 이용해 값을 읽는다.
+    - 숨김 행도 포함해서 읽고, 나중에 완전 빈 행만 제거
+    - 데이터가 가장 많은 시트를 선택
+    """
     data: List[List[str]] = []
-    # openpyxl은 파일 포인터를 소비할 수 있으므로, 매 호출마다 0으로 이동
     try:
         sanitized_bio.seek(0)
         wb = load_workbook(sanitized_bio, data_only=True, read_only=True)
-        # 가장 큰 시트를 선택 (행*열 기준)
-        ws = max(wb.worksheets, key=lambda s: (s.max_row or 0) * (s.max_column or 0))
+        ws = max(wb.worksheets, key=lambda s: _count_nonempty_cells(s))
+        if debug:
+            print(f"[DEBUG] openpyxl target sheet = {ws.title}")
 
-        for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-            # 숨김 행은 제외 (row_dimensions 없는 경우도 안전 처리)
-            hidden = False
-            try:
-                dim = ws.row_dimensions.get(r_idx)
-                hidden = bool(dim and getattr(dim, 'hidden', False))
-            except Exception:
-                hidden = False
-            if hidden:
-                continue
-
+        for row in ws.iter_rows(values_only=True):
             str_row = [str(cell) if cell is not None else "" for cell in row]
-            # 완전 빈 행은 제외
-            if any(v != "" for v in str_row):
-                data.append(str_row)
-    except Exception:
+            data.append(str_row)
+
+        # 완전 빈 행 제거
+        data = [r for r in data if any(v.strip() for v in r)]
+    except Exception as e:
+        if debug:
+            print(f"[DEBUG] openpyxl read failed → {e}")
         data = []
     return data
 
 
-def _read_with_pandas_fallback(sanitized_bio: BytesIO) -> List[List[str]]:
+def _read_with_pandas_fallback(sanitized_bio: BytesIO, debug: bool = False) -> List[List[str]]:
     """pandas 폴백을 정리된 바이트로 수행. calamine가 있으면 우선 사용."""
     # 1) calamine 엔진 시도 (설치되어 있으면 openpyxl 의존 회피)
     try:
         sanitized_bio.seek(0)
         df = pd.read_excel(sanitized_bio, header=None, dtype=str, engine="calamine").fillna('')  # type: ignore[arg-type]
+        if debug:
+            print("[DEBUG] pandas calamine engine used")
         return df.values.tolist()
-    except Exception:
-        pass
+    except Exception as e:
+        if debug:
+            print(f"[DEBUG] pandas calamine not used → {e}")
 
-    # 2) 기본 엔진 (보통 openpyxl)로 재시도 — 이미 sanitize됐으므로 안전
+    # 2) 기본 엔진 (보통 openpyxl)로 재시도 — 이미 sanitize됐으므로 상대적으로 안전
     try:
         sanitized_bio.seek(0)
         df = pd.read_excel(sanitized_bio, header=None, dtype=str).fillna('')
+        if debug:
+            print("[DEBUG] pandas default engine used")
         return df.values.tolist()
-    except Exception:
+    except Exception as e:
+        if debug:
+            print(f"[DEBUG] pandas default failed → {e}")
         return []
 
 
-def read_xlsx_values(bio: BytesIO) -> List[List[str]]:
+def read_xlsx_values(bio: BytesIO, debug: bool = True) -> List[List[str]]:
     """
     업로드된 XLSX BytesIO를 안정적으로 파싱하여 2D 리스트로 반환합니다.
     1) XML sanitize로 sheetViews/pane 제거
-    2) openpyxl로 시도 → 비정상 시 pandas로 폴백 (정리된 바이트 사용)
-    3) Shopee 메타 데이터 행 제거
+    2) openpyxl로 시도(숨김행 포함/실데이터 많은 시트 선택) → 비정상 시 pandas로 폴백
+    3) Shopee 메타 데이터 행 최소 제거(최대 1회씩)
     """
     original_bytes = bio.getvalue()
     sanitized_bio = _sanitize_xlsx_for_openpyxl(original_bytes)
 
     # 1) openpyxl 경로
-    data = _read_with_openpyxl(sanitized_bio)
+    data = _read_with_openpyxl(sanitized_bio, debug=debug)
 
     # 2) 결과가 비정상적이면 pandas 폴백 (정리된 바이트 기반)
     is_data_invalid = (not data) or (len(data) == 1 and len(data[0]) <= 1)
     if is_data_invalid:
-        data = _read_with_pandas_fallback(sanitized_bio)
+        data = _read_with_pandas_fallback(sanitized_bio, debug=debug)
         if not data:
+            if debug:
+                print("[DEBUG] both readers failed → return []")
             return []
 
-    # 3) Shopee 메타 데이터 행 제거
-    #    - et_title_ 로 시작하는 헤더 제거
-    while data and data[0] and any(str(c).startswith('et_title_') for c in data[0]):
+    # 3) Shopee 메타 데이터 행 최소 제거 (과제거 방지)
+    # et_title_* 헤더가 맨 윗줄에 있으면 한 번만 제거
+    if data and data[0] and any(str(c).startswith('et_title_') for c in data[0]):
         data.pop(0)
-    #    - 구역 라벨(basic_info/media_info/sales_info) 제거
-    while data and data[0] and str(data[0][0]) in ('basic_info', 'media_info', 'sales_info'):
+    # 구역 라벨(basic_info/media_info/sales_info)이 맨 윗줄에 있으면 한 번만 제거
+    if data and data[0] and str(data[0][0]).strip() in ('basic_info', 'media_info', 'sales_info'):
         data.pop(0)
+
+    if debug:
+        print(f"[DEBUG] final rows={len(data)} preview={data[:3]}")
 
     return data
 
@@ -208,7 +232,7 @@ def apply_uploaded_files(files: dict[str, BytesIO]) -> list[str]:
             continue
 
         try:
-            values = read_xlsx_values(raw)
+            values = read_xlsx_values(raw, debug=True)
             if not values:
                 logs.append(f"[ERROR] {tab}: {fname} 읽기 결과가 비어 있습니다.")
                 continue
