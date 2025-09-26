@@ -12,7 +12,7 @@ import re
 import time
 import json
 from pathlib import Path
-from typing import Optional, Dict, Callable, List
+from typing import Optional, Dict, Callable, List  # ★ List 추가
 
 import gspread
 from gspread.exceptions import WorksheetNotFound
@@ -55,7 +55,6 @@ def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = N
     if not name:
         return False
 
-    # 탐색 경로: 현재 파일 근처 → 상위 → CWD
     base = Path(__file__).resolve().parent
     candidates = search_paths or [base / ".env", base.parent / ".env", Path.cwd() / ".env"]
 
@@ -68,7 +67,6 @@ def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = N
         except Exception:
             continue
     if env_path is None:
-        # 첫 후보에 새로 생성 시도
         env_path = candidates[0]
 
     try:
@@ -90,7 +88,6 @@ def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = N
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True
     except Exception:
-        # 쓰기 불가(예: 클라우드 읽기전용 등)
         return False
 
 
@@ -110,7 +107,7 @@ def with_retry(fn: Callable, retries: int = 3, delay: float = 2.0):
         raise last_err
 
 
-def _service_account_from_streamlit_or_env() -> Optional[gspread.Client]:
+def _service_account_from_streamlit_or_env) -> Optional[gspread.Client]:
     """Streamlit Secrets 또는 ENV의 서비스계정 JSON으로 gspread 클라이언트를 생성.
     둘 다 없으면 None 반환.
     """
@@ -137,11 +134,9 @@ def _service_account_from_streamlit_or_env() -> Optional[gspread.Client]:
 
 def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> str:
     """시트 키를 secrets/ENV에서 해석. URL/키 모두 허용."""
-    # Streamlit secrets → ENV 순서로 조회
     val: Optional[str] = None
     try:
         import streamlit as st  # type: ignore
-        # secrets 우선 (예: GOOGLE_SHEET_KEY)
         if primary_env in st.secrets:
             val = str(st.secrets.get(primary_env, "") or "").strip()
         elif fallback_env and fallback_env in st.secrets:
@@ -157,7 +152,6 @@ def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> 
     if not val:
         raise RuntimeError(f"{primary_env} (또는 {fallback_env}) 가 secrets/ENV에 설정되어 있지 않습니다.")
 
-    # URL or raw key 지원
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9\-_]+)", val)
     return m.group(1) if m else val
 
@@ -170,11 +164,7 @@ def open_sheet_by_env():
     키 이름 호환: GOOGLE_SHEET_KEY → (fallback) GOOGLE_SHEETS_SPREADSHEET_ID
     """
     load_env()
-
-    # 1) 인증: 서비스계정 우선
     gc = _service_account_from_streamlit_or_env()
-
-    # 2) 로컬 OAuth 폴백
     if gc is None:
         here = Path(__file__).resolve().parent
         cred_path = here / "client_secret.json"
@@ -184,7 +174,6 @@ def open_sheet_by_env():
             authorized_user_filename=str(token_path),
         )
 
-    # 3) 시트 키 해석 (URL/키 모두 허용)
     sheet_key = _resolve_sheet_key(
         primary_env="GOOGLE_SHEET_KEY",
         fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
@@ -193,12 +182,8 @@ def open_sheet_by_env():
 
 
 def open_ref_by_env():
-    """레퍼런스 시트(선택)를 연다. 없으면 None 반환.
-    키 이름 호환: REFERENCE_SHEET_KEY → (fallback) REFERENCE_SPREADSHEET_ID
-    """
+    """레퍼런스 시트(선택)를 연다. 없으면 None 반환."""
     load_env()
-
-    # 인증 재사용
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
         here = Path(__file__).resolve().parent
@@ -210,10 +195,8 @@ def open_ref_by_env():
                 authorized_user_filename=str(token_path),
             )
         except Exception:
-            # 레퍼런스 시트는 optional. 인증 실패 시 None 처리
             return None
 
-    # 키가 없으면 optional로 간주하고 None
     try:
         ref_key = _resolve_sheet_key(
             primary_env="REFERENCE_SHEET_KEY",
