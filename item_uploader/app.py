@@ -260,14 +260,14 @@ h1, h2, h3, h5 { font-weight: 700; }
         )
 
         shop_code = st.text_input(
-            "샵 코드 (Shop Code) 입력",
-            placeholder="예: RO, VN 등 국가 코드를 입력하세요.",
+            "샵 코드 입력",
+            placeholder="예: RORO, 01 등 샵 코드를 입력하세요. 커버 이미지 파일의 코드와 동일해야합니다.",
             key="shop_code_input",
         )
 
         is_ready = bool(uploaded_files and shop_code)
 
-        if st.button("🚀 파일 업로드 및 전체 자동화 실행", key="run_all", disabled=not is_ready):
+        if st.button("🚀 파일 업로드 및 실행", key="run_all", disabled=not is_ready):
             # 상태 초기화
             st.session_state.upload_success = False
             st.session_state.automation_success = False
