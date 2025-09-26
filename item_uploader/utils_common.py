@@ -161,27 +161,22 @@ def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> 
 
 def open_sheet_by_env():
     """
-    실행 환경에 따라 인증 방식을 선택하여 메인 스프레드시트를 연다.
-    - Cloud: Streamlit Secrets(service account) → ENV(JSON)
-    - Local: 위가 없으면 OAuth(client_secret.json/token.json)
-    키 이름 호환: GOOGLE_SHEET_KEY → (fallback) GOOGLE_SHEETS_SPREADSHEET_ID
+    메인 스프레드시트 오픈 (STRICT SA)
+    - Streamlit Secrets의 [gcp_service_account] 또는 ENV(GCP_SERVICE_ACCOUNT_JSON)로만 인증
+    - 서비스계정 없으면 친절한 에러 (Cloud에서 client_secret.json 폴백 금지)
     """
     load_env()
 
-    # 1) 인증: 서비스계정 우선
+    # 1) 서비스계정으로만 인증 시도
     gc = _service_account_from_streamlit_or_env()
-
-    # 2) 로컬 OAuth 폴백
     if gc is None:
-        here = Path(__file__).resolve().parent
-        cred_path = here / "client_secret.json"
-        token_path = here / "token.json"
-        gc = gspread.oauth(
-            credentials_filename=str(cred_path),
-            authorized_user_filename=str(token_path),
+        raise RuntimeError(
+            "[AUTH] 서비스계정 인증 정보를 찾지 못했습니다. "
+            "Streamlit Secrets에 [gcp_service_account] 블록을 추가하거나 "
+            "환경변수 GCP_SERVICE_ACCOUNT_JSON을 설정하세요."
         )
 
-    # 3) 시트 키 해석
+    # 2) 시트 키 해석 (URL/키 모두 허용)
     sheet_key = _resolve_sheet_key(
         primary_env="GOOGLE_SHEET_KEY",
         fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
