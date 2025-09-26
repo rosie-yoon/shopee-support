@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""ITEM UPLOADER Streamlit app (clean multipage version)."""
-
 from __future__ import annotations
 
+import importlib, logging
 from pathlib import Path
+from typing import Optional
+
 import streamlit as st
+import gspread
 
 # ---- 패키지 내부 모듈: 상대 임포트로 통일 ----
 from .utils_common import (
@@ -12,6 +14,67 @@ from .utils_common import (
 )
 from .upload_apply import collect_xlsx_files, apply_uploaded_files
 from .main_controller import ShopeeAutomation
+
+# ------------------------------------------------------------
+# (선택) 버전 로깅: 디버깅 편의
+# ------------------------------------------------------------
+def _log_versions():
+    mods = ["pandas", "openpyxl", "gspread"]
+    for m in mods:
+        try:
+            v = importlib.import_module(m).__version__
+        except Exception:
+            v = "not-found"
+        logging.warning(f"[VERSIONS] {m}={v}")
+_log_versions()
+
+
+# ------------------------------------------------------------
+# 멀티 테넌트 오버라이드: 사이드바 입력 > Secrets/ENV
+#  - ShopeeAutomation 내부에서 utils_common._resolve_sheet_key를 호출하므로
+#    여기서 해당 함수에 '세션 오버라이드 우선' 몽키패치를 건다.
+# ------------------------------------------------------------
+def _install_multitenant_override():
+    from . import utils_common as U  # 모듈 객체
+    _orig = U._resolve_sheet_key     # 원본 보관
+
+    def _prefer_session_override(primary_env: str, fallback_env: Optional[str] = None) -> str:
+        """
+        1) 사이드바 입력(세션 상태) 우선
+        2) 없으면 기존 원본 로직(_resolve_sheet_key) 사용
+        - primary_env/fallback_env는 보통:
+          - 메인:  "GOOGLE_SHEET_KEY" / "GOOGLE_SHEETS_SPREADSHEET_ID"
+          - 참조:  "REFERENCE_SHEET_KEY" / "REFERENCE_SPREADSHEET_ID"
+        """
+        # 세션에 담아둔 오버라이드 키/URL (빈 문자열이면 무시)
+        main_raw = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "").strip()
+        ref_raw  = st.session_state.get("OVERRIDE_REFERENCE_SHEET_KEY", "").strip()
+
+        def _as_key(raw: str) -> Optional[str]:
+            if not raw:
+                return None
+            sid = extract_sheet_id(raw)  # URL/키 모두 허용
+            return sid or raw
+
+        # primary/fallback 별로 세션 오버라이드 매핑
+        session_map = {
+            "GOOGLE_SHEET_KEY": _as_key(main_raw),
+            "GOOGLE_SHEETS_SPREADSHEET_ID": _as_key(main_raw),
+            "REFERENCE_SHEET_KEY": _as_key(ref_raw),
+            "REFERENCE_SPREADSHEET_ID": _as_key(ref_raw),
+        }
+
+        # 1) 세션 오버라이드가 있으면 그걸 최우선으로 사용
+        if primary_env in session_map and session_map[primary_env]:
+            return session_map[primary_env]
+        if fallback_env in session_map and session_map[fallback_env]:
+            return session_map[fallback_env]
+
+        # 2) 없으면 기존 동작 유지 (Secrets/ENV)
+        return _orig(primary_env, fallback_env)
+
+    # 실제 패치 적용
+    U._resolve_sheet_key = _prefer_session_override  # type: ignore
 
 
 def run() -> None:
@@ -24,9 +87,37 @@ def run() -> None:
         "upload_success": False,
         "automation_success": False,
         "download_file": None,
+        # 멀티테넌트 오버라이드 기본값
+        "OVERRIDE_GOOGLE_SHEET_KEY": "",
+        "OVERRIDE_REFERENCE_SHEET_KEY": "",
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
+
+    # ---- 사이드바: 멀티 테넌트 시트 오버라이드 ----
+    with st.sidebar:
+        st.markdown("### 🔑 Sheet Override (optional)")
+        st.caption("세션(브라우저 탭)에서만 일시적으로 적용됩니다. 비워두면 Secrets/ENV 값을 사용합니다.")
+        st.text_input(
+            "Main Sheet Key or URL",
+            key="OVERRIDE_GOOGLE_SHEET_KEY",
+            placeholder="키 또는 https://docs.google.com/spreadsheets/d/... URL",
+        )
+        st.text_input(
+            "Reference Sheet Key or URL",
+            key="OVERRIDE_REFERENCE_SHEET_KEY",
+            placeholder="키 또는 https://docs.google.com/spreadsheets/d/... URL",
+        )
+        # 세션 오버라이드가 있는지 시각 피드백
+        has_main = bool(st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY"))
+        has_ref  = bool(st.session_state.get("OVERRIDE_REFERENCE_SHEET_KEY"))
+        st.write(
+            f"Main: {'✅ Override' if has_main else '↩ Defaults'} / "
+            f"Ref: {'✅ Override' if has_ref else '↩ Defaults'}"
+        )
+
+    # ---- 멀티테넌트 오버라이드 설치 (반드시 UI 구성 직후) ----
+    _install_multitenant_override()
 
     # ---- 헤더 / 타이틀 ----
     st.title("⬆️ Copy Template")
@@ -58,7 +149,7 @@ h1, h2, h3, h5 { font-weight: 700; }
         unsafe_allow_html=True,
     )
 
-    # ---- 설정 다이얼로그 ----
+    # ---- 설정 다이얼로그 (싱글 테넌트 기본값 저장 UI) ----
     @st.dialog("⚙️ 초기 설정")
     def settings_dialog():
         st.markdown("<h5>■ 샵 복제 시트 URL</h5>", unsafe_allow_html=True)
@@ -98,6 +189,7 @@ h1, h2, h3, h5 { font-weight: 700; }
             elif not image_host.startswith("http"):
                 st.error("주소는 'http://' 또는 'https://'로 시작해야 합니다.")
             else:
+                # 싱글 테넌트 기본값 저장(.env) — Cloud에선 실패할 수 있으나 로컬 편의용
                 save_env_value("GOOGLE_SHEETS_SPREADSHEET_ID", sheet_id)
                 save_env_value("IMAGE_HOSTING_URL", image_host)
                 st.success("설정이 저장되었습니다!")
