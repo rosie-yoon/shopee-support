@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-utils_common.py (CLEAN, strict)
-- Cloud/Local 환경에서 안정적으로 Google Sheets 인증/접근
-- 우선순위: Streamlit Secrets(service account) → ENV(JSON 문자열) → 로컬 OAuth(client_secret.json)
-- open_ref_by_env(): '참조 시트'만 연다 (폴백/None 금지)
+utils_common.py (FINAL, STRICT)
+- Streamlit Cloud/Local 에서 안정적인 Google Sheets 접근
+- 인증: Service Account만 허용 (Secrets[gcp_service_account] 또는 ENV[GCP_SERVICE_ACCOUNT_JSON])
+- 시트 키 해석: secrets/env 값이 URL/키 어느 쪽이든 허용
+- with_retry: 429/5xx에 지수 백오프 + 지터
 """
 from __future__ import annotations
 
 import os
 import re
-import time
 import json
+import time
+import random
 from pathlib import Path
 from typing import Optional, Dict, Callable, List
 
@@ -18,17 +20,18 @@ import gspread
 from gspread.exceptions import WorksheetNotFound
 from dotenv import load_dotenv
 
+
 # -----------------------------
-# 환경변수 로딩
+# ENV / Secrets
 # -----------------------------
-def load_env():
+def load_env() -> None:
     """여러 위치에서 .env 탐색하여 로드"""
     base = Path(__file__).resolve().parent
     for p in [base / ".env", base.parent / ".env", Path.cwd() / ".env"]:
         if p.exists():
             load_dotenv(p, override=True)
             return
-    load_dotenv(override=True)  # fallback: 시스템 환경변수만
+    load_dotenv(override=True)  # fallback
 
 
 def get_env(name: str, default: str = "") -> str:
@@ -36,19 +39,19 @@ def get_env(name: str, default: str = "") -> str:
 
 
 def get_bool_env(name: str, default: bool = False) -> bool:
-    val = os.getenv(name, "").strip().lower()
-    if val in ["1", "true", "yes", "y"]:
+    v = os.getenv(name, "").strip().lower()
+    if v in ("1", "true", "yes", "y"):
         return True
-    if val in ["0", "false", "no", "n"]:
+    if v in ("0", "false", "no", "n"):
         return False
     return default
 
 
 def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = None) -> bool:
     """
-    .env에 name=value를 저장(있으면 교체, 없으면 추가).
+    .env에 name=value 저장(있으면 교체, 없으면 추가).
     - Cloud(읽기전용)에서는 실패할 수 있으므로 False 반환 가능.
-    - 로컬 개발 편의용 유틸. 반환값으로 성공 여부만 알려줌.
+    - 로컬 개발 편의 유틸.
     """
     name = str(name).strip()
     value = str(value)
@@ -74,10 +77,10 @@ def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = N
         if env_path.exists():
             lines = env_path.read_text(encoding="utf-8").splitlines()
 
-        pattern = re.compile(rf"^\s*{re.escape(name)}\s*=\s*.*$")
+        patt = re.compile(rf"^\s*{re.escape(name)}\s*=\s*.*$")
         replaced = False
         for i, line in enumerate(lines):
-            if pattern.match(line):
+            if patt.match(line):
                 lines[i] = f"{name}={value}"
                 replaced = True
                 break
@@ -92,32 +95,56 @@ def save_env_value(name: str, value: str, search_paths: Optional[List[Path]] = N
 
 
 # -----------------------------
-# gspread 인증/시트 접근
+# Retry (429/5xx 지수 백오프)
 # -----------------------------
-
-def with_retry(fn: Callable, retries: int = 3, delay: float = 2.0):
-    """API 요청 재시도 래퍼"""
+def with_retry(
+    fn: Callable,
+    retries: int = 8,
+    base_delay: float = 2.0,
+    backoff: float = 1.8,
+    max_delay: float = 65.0,
+):
+    """
+    gspread 호출용 재시도 래퍼
+    - 429(quota/rate) 또는 500/502/503/504에서 지수 백오프 + 지터로 재시도
+    - 그 외 에러는 즉시 전파
+    """
     last_err = None
-    for _ in range(retries):
+    delay = base_delay
+    for attempt in range(1, retries + 1):
         try:
             return fn()
         except Exception as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            msg = (str(e) or "").lower()
+            is_rate = (code in (429, 500, 502, 503, 504)) or ("quota" in msg) or ("rate" in msg)
+
+            if is_rate and attempt < retries:
+                sleep_for = min(max_delay, delay + random.uniform(0, delay * 0.3))
+                time.sleep(sleep_for)
+                delay = min(max_delay, delay * backoff)
+                last_err = e
+                continue
+
             last_err = e
-            time.sleep(delay)
-    if last_err:
-        raise last_err
+            break
+    raise last_err
 
 
+# -----------------------------
+# gspread 인증 / 시트 키 해석
+# -----------------------------
 def _service_account_from_streamlit_or_env() -> Optional[gspread.Client]:
-    """Streamlit Secrets 또는 ENV의 서비스계정 JSON으로 gspread 클라이언트를 생성.
-    둘 다 없으면 None 반환.
+    """
+    Streamlit Secrets 또는 ENV(GCP_SERVICE_ACCOUNT_JSON)의 서비스계정 JSON으로 Client 생성.
+    - 둘 다 없으면 None
     """
     # 1) Streamlit Secrets
     try:
         import streamlit as st  # type: ignore
         if "gcp_service_account" in st.secrets:
-            creds_info = st.secrets["gcp_service_account"]  # dict
-            return gspread.service_account_from_dict(dict(creds_info))
+            creds_info = dict(st.secrets["gcp_service_account"])
+            return gspread.service_account_from_dict(creds_info)
     except Exception:
         pass
 
@@ -134,8 +161,10 @@ def _service_account_from_streamlit_or_env() -> Optional[gspread.Client]:
 
 
 def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> str:
-    """시트 키를 secrets/ENV에서 해석. URL/키 모두 허용."""
-    # Streamlit secrets → ENV 순서로 조회
+    """
+    시트 키를 secrets/ENV에서 해석. URL/키 모두 허용.
+    - 우선순위: Streamlit Secrets → ENV
+    """
     val: Optional[str] = None
     try:
         import streamlit as st  # type: ignore
@@ -154,20 +183,17 @@ def _resolve_sheet_key(primary_env: str, fallback_env: Optional[str] = None) -> 
     if not val:
         raise RuntimeError(f"{primary_env} (또는 {fallback_env}) 가 secrets/ENV에 설정되어 있지 않습니다.")
 
-    # URL or raw key 지원
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9\-_]+)", val)
     return m.group(1) if m else val
 
 
 def open_sheet_by_env():
     """
-    메인 스프레드시트 오픈 (STRICT SA)
-    - Streamlit Secrets의 [gcp_service_account] 또는 ENV(GCP_SERVICE_ACCOUNT_JSON)로만 인증
-    - 서비스계정 없으면 친절한 에러 (Cloud에서 client_secret.json 폴백 금지)
+    메인 스프레드시트 오픈 (STRICT)
+    - Service Account만 허용 (Secrets[gcp_service_account] / ENV[GCP_SERVICE_ACCOUNT_JSON])
+    - 폴백(OAuth client_secret.json) 없음
     """
     load_env()
-
-    # 1) 서비스계정으로만 인증 시도
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
         raise RuntimeError(
@@ -175,39 +201,23 @@ def open_sheet_by_env():
             "Streamlit Secrets에 [gcp_service_account] 블록을 추가하거나 "
             "환경변수 GCP_SERVICE_ACCOUNT_JSON을 설정하세요."
         )
-
-    # 2) 시트 키 해석 (URL/키 모두 허용)
-    sheet_key = _resolve_sheet_key(
-        primary_env="GOOGLE_SHEET_KEY",
-        fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
-    )
+    sheet_key = _resolve_sheet_key("GOOGLE_SHEET_KEY", "GOOGLE_SHEETS_SPREADSHEET_ID")
     return gc.open_by_key(sheet_key)
 
 
 def open_ref_by_env():
     """
-    STRICT: REFERENCE_SHEET_KEY로 지정된 '참조 시트'만 연다.
-    - 성공: Spreadsheet 반환
-    - 실패: 이유 포함 예외 발생 (None/폴백 금지)
+    참조 시트(REFERENCE_SHEET_KEY)만 연다 (STRICT)
+    - 실패 시 명확한 예외 (None/폴백 금지)
     """
     load_env()
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
-        here = Path(__file__).resolve().parent
-        cred_path = here / "client_secret.json"
-        token_path = here / "token.json"
-        try:
-            gc = gspread.oauth(
-                credentials_filename=str(cred_path),
-                authorized_user_filename=str(token_path),
-            )
-        except Exception as e:
-            raise RuntimeError(f"[REF] 인증 실패: {e}") from e
-
-    ref_key = _resolve_sheet_key(
-        primary_env="REFERENCE_SHEET_KEY",
-        fallback_env="REFERENCE_SPREADSHEET_ID",
-    )
+        raise RuntimeError(
+            "[AUTH] 서비스계정 인증 정보를 찾지 못했습니다. "
+            "Streamlit Secrets 또는 GCP_SERVICE_ACCOUNT_JSON을 확인하세요."
+        )
+    ref_key = _resolve_sheet_key("REFERENCE_SHEET_KEY", "REFERENCE_SPREADSHEET_ID")
     try:
         return gc.open_by_key(ref_key)
     except Exception as e:
@@ -237,9 +247,8 @@ def get_or_create_worksheet(sh, name: str, rows: int = 100, cols: int = 26):
 
 
 # -----------------------------
-# 문자열/헤더 정규화
+# 문자열/헤더 정규화 & 유틸
 # -----------------------------
-
 def norm(s: str) -> str:
     return (
         str(s or "")
@@ -281,9 +290,8 @@ def sheet_link(sid: str) -> str:
 
 
 # -----------------------------
-# 카테고리 관련 유틸
+# 카테고리 관련
 # -----------------------------
-
 def strip_category_id(cat: str) -> str:
     """ '101814 - Home & Living/...' -> 'Home & Living/...' """
     s = str(cat or "")
@@ -292,7 +300,7 @@ def strip_category_id(cat: str) -> str:
 
 
 def top_of_category(cat: str) -> Optional[str]:
-    """ TopLevel 추출 """
+    """ TopLevel 추출 (구분자: '/', '>', '|', '\\') """
     if not cat:
         return None
     tail = strip_category_id(cat)
@@ -307,6 +315,5 @@ def top_of_category(cat: str) -> Optional[str]:
 # -----------------------------
 # TEM 시트명
 # -----------------------------
-
 def get_tem_sheet_name() -> str:
     return get_env("TEM_OUTPUT_SHEET_NAME", "TEM_OUTPUT")

@@ -596,42 +596,84 @@ def run_step_6(sh: gspread.Spreadsheet, shop_code: str):
 # ==============================================================================
 
 def run_step_7(sh: gspread.Spreadsheet):
-    """TEM_OUTPUT을 TopLevel Category 단위로 분할하여 엑셀 파일 생성"""
+    """
+    TEM_OUTPUT을 TopLevel Category 단위로 분할하여 엑셀 파일 생성
+    - Sheets 429(쿼터) 회피: with_retry에 넉넉한 백오프 적용
+    - get_values() 남용 방지: 범위를 지정해 읽기
+    """
+    import re
+    from io import BytesIO
+    import pandas as pd
+    from gspread.utils import rowcol_to_a1
+
     print("\n[ Automation ] Starting Step 7: Generating final template file...")
 
     tem_name = get_tem_sheet_name()
     tem_ws = safe_worksheet(sh, tem_name)
-    all_data = with_retry(lambda: tem_ws.get_values())
-    if not all_data:
-        print("[!] TEM_OUTPUT sheet is empty. Cannot generate file.")
+
+    # 1) 헤더 1행 먼저 읽고, 대략적인 범위를 계산해 한 번에 읽기
+    header = with_retry(lambda: tem_ws.row_values(1), retries=8, base_delay=3.0, backoff=2.0, max_delay=70.0)
+    if not header:
+        print("[!] TEM_OUTPUT header is empty. Cannot generate file.")
         return None
 
+    max_cols = max(1, len(header))
+    # 행 수는 넉넉히 20000까지 (필요시 ENV로 튜닝 가능)
+    max_rows = 20000
+    rng = f"A1:{rowcol_to_a1(max_rows, max_cols)}"
+
+    all_data = with_retry(lambda: tem_ws.get(rng), retries=8, base_delay=3.0, backoff=2.0, max_delay=70.0)
+    if not all_data:
+        print("[!] TEM_OUTPUT sheet is empty within range. Cannot generate file.")
+        return None
+
+    # 2) DataFrame 구성
     df = pd.DataFrame(all_data)
-    header_indices = df[df[1].str.lower() == 'category'].index
-    if header_indices.empty:
+    # 최소 2열은 있다고 가정 (1열: PID, 2열: Category/Headers 시작)
+    if df.shape[1] < 2:
+        print("[!] TEM_OUTPUT has insufficient columns.")
+        return None
+
+    # 'category' 헤더가 있는 행 인덱스 탐지 (두번째 컬럼 기준)
+    # 일부 행은 빈 값일 수 있으니, 문자열로 변환 후 비교
+    col1 = df.iloc[:, 1].astype(str).str.lower()
+    header_indices = col1.index[col1.eq('category')]
+    if len(header_indices) == 0:
         print("[!] No valid header rows found in TEM_OUTPUT.")
         return None
 
+    # 3) 분할 저장
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for i, header_index in enumerate(header_indices):
-            start_row = header_index + 1
-            end_row = header_indices[i+1] if i + 1 < len(header_indices) else len(df)
+        for i, header_idx in enumerate(header_indices):
+            start_row = header_idx + 1
+            end_row = header_indices[i + 1] if i + 1 < len(header_indices) else len(df)
 
             chunk_df = df.iloc[start_row:end_row]
             if chunk_df.empty:
                 continue
 
-            first_cat = chunk_df.iloc[0, 1] if len(chunk_df.iloc[0]) > 1 else "UNKNOWN"
+            # 첫 데이터 행의 카테고리로 Top Level 판단
+            try:
+                first_cat = str(chunk_df.iloc[0, 1] or "")
+            except Exception:
+                first_cat = "UNKNOWN"
+
             top_level_name = top_of_category(first_cat) or "UNKNOWN"
-            sheet_name = re.sub(r'[\\s/\\\\*?:\\[\\]]', '_', top_level_name.title())[:31]
+            # 시트명 제약 문자 제거 + 31자 제한
+            sheet_name = re.sub(r'[\\s/\\\\*?:\\[\\]]', '_', top_level_name.title())[:31] or "Sheet1"
 
-            # 첫 컬럼(Product ID) 제거해 B열부터만 저장
-            chunk_df = chunk_df.iloc[:, 1:]
-            # SKU 공백 하이픈 정리(예: 'ABC - 123' -> 'ABC-123')
-            chunk_df.iloc[:, 0] = chunk_df.iloc[:, 0].str.replace(r'\\s*-\\s*', '-', regex=True)
+            # 첫 컬럼(Product ID) 제거 → B열부터 저장
+            sub_df = chunk_df.iloc[:, 1:].copy()
 
-            chunk_df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
+            # SKU(첫 열) 공백-하이픈 정리: 'ABC - 123' -> 'ABC-123'
+            try:
+                sub_df.iloc[:, 0] = sub_df.iloc[:, 0].astype(str).str.replace(r'\s*-\s*', '-', regex=True)
+            except Exception:
+                pass
+
+            # 헤더 없는 raw로 저장 (원본 템플릿 포맷 유지)
+            sub_df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
 
     output.seek(0)
     print("Step 7: Final template file generated successfully.")
