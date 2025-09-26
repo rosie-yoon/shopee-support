@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import importlib, logging
-from typing import Optional
+import importlib
+import logging
 import os
+from typing import Optional
 
 import streamlit as st
-import gspread
 
-# ---- 패키지 내부 모듈 ----
-from .utils_common import (
-    get_env, extract_sheet_id, load_env
-)
+# 내부 모듈
+from .utils_common import load_env, get_env, extract_sheet_id
 from .upload_apply import collect_xlsx_files, apply_uploaded_files
 from .main_controller import ShopeeAutomation
 
@@ -32,11 +30,10 @@ _log_versions()
 
 # ------------------------------------------------------------
 # 멀티 테넌트 오버라이드 (메인 시트만): 사이드바 입력 > Secrets/ENV
-#  ShopeeAutomation/업로더 내부에서 utils_common._resolve_sheet_key를 호출하므로
-#  여기서 해당 함수에 '세션 오버라이드 우선' 몽키패치를 건다.
+#  utils_common._resolve_sheet_key에 세션 오버라이드 몽키패치
 # ------------------------------------------------------------
 def _install_multitenant_override():
-    from . import utils_common as U  # 모듈 객체
+    from . import utils_common as U
     _orig = U._resolve_sheet_key
 
     def _prefer_session_override(primary_env: str, fallback_env: Optional[str] = None) -> str:
@@ -52,11 +49,9 @@ def _install_multitenant_override():
             sid = extract_sheet_id(raw)  # URL/키 모두 허용
             return sid or raw
 
-        # 메인만 세션 오버라이드
         session_map = {
             "GOOGLE_SHEET_KEY": _as_key(main_raw),
             "GOOGLE_SHEETS_SPREADSHEET_ID": _as_key(main_raw),
-            # REFERENCE_* 는 의도적으로 오버라이드하지 않음
         }
 
         if primary_env in session_map and session_map[primary_env]:
@@ -64,7 +59,6 @@ def _install_multitenant_override():
         if fallback_env in session_map and session_map.get(fallback_env):
             return session_map[fallback_env]
 
-        # 없으면 기존 로직(Secrets/ENV) 사용
         return _orig(primary_env, fallback_env)
 
     U._resolve_sheet_key = _prefer_session_override  # type: ignore
@@ -87,34 +81,39 @@ def run() -> None:
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 
-        # ── 사이드바(항상 표시): 초기 설정 ─────────────────
+    # ── 사이드바(항상 표시): 초기 설정 ───────────────────────────
     with st.sidebar:
         st.markdown("### ⚙️ 설정")
 
+        # 회색 도움말 박스 (링크 포함)
         st.markdown(
             """
-            <div style="font-size:0.9rem; color:#4A4A4A;">
-            샵 복제 시트의 주소를 입력하세요.<br>
-            시트가 없다면
-            <a href="https://docs.google.com/spreadsheets/d/1l5DK-1lNGHFPfl7mbI6sTR_qU1cwHg2-tlBXzY2JhbI/edit#gid=0"
-               target="_blank">템플릿 시트</a>에서 사본을 생성하여 입력해주세요.
+            <div class="sb-help">
+              샵 복제 시트의 주소를 입력하세요.<br/>
+              시트가 없다면
+              <a href="https://docs.google.com/spreadsheets/d/1l5DK-1lNGHFPfl7mbI6sTR_qU1cwHg2-tlBXzY2JhbI/edit#gid=0"
+                 target="_blank">템플릿 시트</a>에서 사본을 생성하여 입력해주세요.
             </div>
             """,
             unsafe_allow_html=True,
         )
 
+        # 라벨 + 입력 필드 (라벨은 별도 출력 → 간격/가독성 확보)
+        st.markdown('<div class="sb-label">샵 복제 시트 URL</div>', unsafe_allow_html=True)
         st.text_input(
-            "샵 복제 시트 URL",
+            label="샵 복제 시트 URL",
             key="OVERRIDE_GOOGLE_SHEET_KEY",
             placeholder="https://docs.google.com/spreadsheets/d/...",
+            label_visibility="collapsed",
         )
 
+        st.markdown('<div class="sb-label">이미지 호스팅 주소</div>', unsafe_allow_html=True)
         st.text_input(
-            "이미지 호스팅 주소",
+            label="이미지 호스팅 주소",
             key="IMAGE_HOSTING_URL_STATE",
-            placeholder="https://test.domain.com/",
+            placeholder="https://shopeetest.om/",
+            label_visibility="collapsed",
         )
-
 
     # ── 멀티테넌트 오버라이드 설치(메인만 오버라이드) ───────────────
     _install_multitenant_override()
@@ -128,7 +127,7 @@ def run() -> None:
     # ── 헤더 / 타이틀 ─────────────────────────────────────────────
     st.title("⬆️ Copy Template")
 
-    # ---- CSS ----
+    # ---- CSS (전역 + 사이드바 전용) ----
     st.markdown(
         """
 <style>
@@ -149,6 +148,33 @@ div[data-testid="stAppViewContainer"] > .main .block-container {
 }
 .log-success { color: #2E7D32; } .log-error { color: #C62828; } .log-warn { color: #EF6C00; } .log-info { color: #333; }
 h1, h2, h3, h5 { font-weight: 700; }
+
+/* 사이드바 도움말 박스 */
+[data-testid="stSidebar"] .sb-help {
+  background: #F2F4F7;        /* 연한 회색 */
+  color: #6B7280;             /* 텍스트 회색 */
+  border: 1px solid #E5E7EB;  /* 얇은 테두리 */
+  border-radius: 10px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  margin: 4px 0 14px 0;       /* 아래쪽 간격 넉넉히 */
+  font-size: 0.92rem;
+}
+/* 라벨 느낌의 소제목 (입력창 위) */
+[data-testid="stSidebar"] .sb-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #374151;
+  margin: 10px 0 6px 0;       /* 라벨과 인풋 사이 간격 */
+}
+/* 링크 컬러 */
+[data-testid="stSidebar"] .sb-help a {
+  color: #2563EB;
+  text-decoration: none;
+}
+[data-testid="stSidebar"] .sb-help a:hover {
+  text-decoration: underline;
+}
 </style>
 """,
         unsafe_allow_html=True,
@@ -255,11 +281,11 @@ h1, h2, h3, h5 { font-weight: 700; }
         else:
             st.info("자동화가 성공적으로 완료되면 여기에 다운로드 버튼이 나타납니다.")
 
-    # ---- 라우팅 (다이얼로그 제거, 사이드바 고정) ----
+    # ---- 라우팅 ----
     main_application()
 
 
-# 단독 실행 지원(브릿지 없이 app.py만 직접 실행 시)
+# 단독 실행 지원
 if __name__ == "__main__":
     st.set_page_config(page_title="ITEM UPLOADER", page_icon="⬆️", layout="wide")
     run()
