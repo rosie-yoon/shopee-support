@@ -22,7 +22,7 @@ import pandas as pd
 from .utils_common import (
     load_env, with_retry, safe_worksheet, header_key, top_of_category,
     get_tem_sheet_name, get_env, get_bool_env, hex_to_rgb01, strip_category_id,
-    open_ref_by_env,  # ← ref 자동 오픈(폴백 내장)
+    open_ref_by_env,
 )
 
 # ==============================================================================
@@ -110,19 +110,41 @@ def run_step_1(sh: gspread.Spreadsheet, ref: gspread.Spreadsheet):
         print("[!] BASIC or MEDIA 시트가 비어 있습니다.")
         return
 
-    # TemplateDict 읽기 (명확한 에러 메시지)
+    # TemplateDict 읽기 (엄격 매칭 + 디버그 로그)
+    # ref가 무엇을 가리키는지와 탭 목록을 먼저 출력
     try:
-        template_dict_ws = safe_worksheet(ref, ref_sheet)
-    except WorksheetNotFound:
+        ref_id  = getattr(ref, "id", "?")
+        ref_url = getattr(ref, "url", "(n/a)")
+        print(f"[STEP1][REF] id={ref_id} url={ref_url}")
+        ref_titles = [ws.title for ws in with_retry(lambda: ref.worksheets())]
+        print(f"[STEP1][REF] tabs={ref_titles}")
+    except Exception as e:
+        raise RuntimeError(f"[STEP1] 참조 시트 메타 읽기 실패: {e}")
+
+    # ENV에 뭐가 들어있든 'TemplateDict'만 엄격하게 사용
+    REF_TEMPLATE_TAB = "TemplateDict"
+    env_tab = get_env("TEMPLATE_DICT_SHEET_NAME", "TemplateDict").strip()
+    if env_tab != REF_TEMPLATE_TAB:
+        print(f"[STEP1][WARN] TEMPLATE_DICT_SHEET_NAME='{env_tab}' (ignored). Using strict '{REF_TEMPLATE_TAB}'.")
+
+    if REF_TEMPLATE_TAB not in ref_titles:
         raise RuntimeError(
-            f"[STEP1] 참조 시트는 열렸지만 '{ref_sheet}' 탭이 없습니다. "
-            f"참조 시트(REFERENCE_SHEET_KEY)에 '{ref_sheet}' 탭을 만들어 주세요."
+            f"[STEP1] 참조 시트는 열렸지만 '{REF_TEMPLATE_TAB}' 탭이 없습니다. "
+            f"실제 탭들={ref_titles}"
         )
+
+    template_dict_ws = safe_worksheet(ref, REF_TEMPLATE_TAB)
+    print(f"[STEP1] Using TemplateDict worksheet title = '{template_dict_ws.title}'")
+
     template_vals = with_retry(lambda: template_dict_ws.get_all_values()) or []
+    if not template_vals or len(template_vals) < 2:
+        raise RuntimeError("[STEP1] TemplateDict 탭이 비어 있거나 유효한 헤더/데이터가 없습니다.")
+
     template_dict = {
         header_key(row[0]): [str(x or "").strip() for x in row[1:]]
         for row in template_vals[1:] if (row[0] or "").strip()
     }
+
 
     # MEDIA 헤더 파서
     class MediaHeader:

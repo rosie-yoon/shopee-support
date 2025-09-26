@@ -192,13 +192,7 @@ def open_sheet_by_env():
 
 
 def open_ref_by_env():
-    """레퍼런스 시트(REFERENCE_SHEET_KEY)를 열되,
-    - 실패하면 메인 시트(GOOGLE_SHEET_KEY)로 폴백
-    - 둘 다 실패하면 명확한 이유를 포함한 예외를 던진다
-    """
     load_env()
-
-    # 인증 확보
     gc = _service_account_from_streamlit_or_env()
     if gc is None:
         try:
@@ -214,26 +208,16 @@ def open_ref_by_env():
 
     ref_key = None
     ref_err = None
-
-    # 1) 참조 시트 시도
     try:
-        ref_key = _resolve_sheet_key(
-            primary_env="REFERENCE_SHEET_KEY",
-            fallback_env="REFERENCE_SPREADSHEET_ID",
-        )
+        ref_key = _resolve_sheet_key("REFERENCE_SHEET_KEY", "REFERENCE_SPREADSHEET_ID")
         return gc.open_by_key(ref_key)
     except Exception as e:
-        ref_err = e  # 저장해 두고 폴백 시도
+        ref_err = e
 
-    # 2) 메인 시트 폴백
     try:
-        main_key = _resolve_sheet_key(
-            primary_env="GOOGLE_SHEET_KEY",
-            fallback_env="GOOGLE_SHEETS_SPREADSHEET_ID",
-        )
+        main_key = _resolve_sheet_key("GOOGLE_SHEET_KEY", "GOOGLE_SHEETS_SPREADSHEET_ID")
         return gc.open_by_key(main_key)
     except Exception as main_err:
-        # 둘 다 실패 → 이유를 함께 명확히 알린다
         raise RuntimeError(
             f"[REF] 참조 시트(open_by_key={ref_key})와 메인 시트 둘 다 열기 실패 "
             f"(ref_error={ref_err}, main_error={main_err}). "
