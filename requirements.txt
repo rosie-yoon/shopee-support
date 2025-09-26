@@ -1,0 +1,12 @@
+# Main App & UI
+streamlit
+pillow
+tqdm
+
+# Item Uploader Dependencies
+gspread
+python-dotenv
+pandas
+gspread-formatting
+xlsxwriter
+openpyxl==3.0.10
