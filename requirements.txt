@@ -2,6 +2,8 @@
 streamlit>=1.33,<1.39
 pillow>=10.2
 tqdm>=4.66
+numpy
+opencv-python-headless
 
 # --- Google Sheets / Auth ---
 gspread>=5.12
@@ -12,5 +14,9 @@ python-dotenv>=1.0
 # --- Data / Excel ---
 pandas>=2.2,<2.3
 openpyxl>=3.1.2,<3.2
-
 XlsxWriter>=3.2.0
+
+# --- Firebase ---
+streamlit-firebase-auth==1.1.5
+firebase-admin>=6.5.0
+google-cloud-firestore>=2.16

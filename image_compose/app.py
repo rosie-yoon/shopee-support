@@ -222,8 +222,12 @@ def run():
         # 디버그가 필요하면 아래 한 줄 잠깐 열어보세요:
         # st.caption(f"preview: {type(raw)} -> {None if arr is None else ('ndarray '+str(arr.shape))}")
 
+        # arr 변수에 유효한 이미지 데이터가 있는지 먼저 확인합니다.
         if arr is not None:
             st.image(arr, caption="미리보기 (첫번째 조합)", use_container_width=True)
+        else:
+            # 이미지 생성에 실패하면 에러 메시지를 보여줍니다.
+            st.error("이미지를 생성하는 데 실패했습니다. 입력 값을 확인하거나 다시 시도해주세요.")
         else:
             st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
 
