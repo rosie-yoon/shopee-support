@@ -174,7 +174,8 @@ def run():
         
         if preview_bytes:
             # 세션에 저장된 bytes를 직접 st.image에 전달합니다.
-            st.image(preview_bytes, caption="미리보기 (첫번째 조합)", use_container_width=True)
+            # use_container_width 인수를 제거하여 버전 호환성 문제를 해결합니다.
+            st.image(preview_bytes, caption="미리보기 (첫번째 조합)")
         else:
             # preview_bytes가 없을 때 (초기 상태 또는 생성 실패)
             st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
