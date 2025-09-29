@@ -5,6 +5,7 @@ import zipfile
 
 import streamlit as st
 from PIL import Image
+import numpy as np
 
 # 상대 임포트: image_compose/composer_utils.py 가 같은 폴더에 있어야 합니다.
 # 패키지 인식을 위해 image_compose/__init__.py 도 반드시 존재해야 합니다.
@@ -24,7 +25,7 @@ def run():
             "shadow_preset": "off",
             "item_uploader_key": 0,
             "template_uploader_key": 0,
-            "preview_img": None,
+            "preview_img": None,   # PIL.Image | bytes | np.ndarray
             "download_info": None,
         }
         for k, v in defaults.items():
@@ -33,6 +34,49 @@ def run():
 
     init_state()
     ss = st.session_state
+
+    # ---- PIL/bytes/ndarray → NumPy RGBA(uint8)로 정규화 ----
+    def to_numpy_rgba(x) -> np.ndarray | None:
+        try:
+            # PIL.Image
+            if isinstance(x, Image.Image):
+                im = x
+            # bytes/bytearray
+            elif isinstance(x, (bytes, bytearray)):
+                bio = io.BytesIO(x)
+                im = Image.open(bio)
+            # ndarray
+            elif isinstance(x, np.ndarray):
+                arr = x
+                if arr.dtype != np.uint8:
+                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+                if arr.ndim == 3 and arr.shape[2] in (3, 4):
+                    # RGB/ RGBA 그대로 사용
+                    if arr.shape[2] == 3:
+                        # RGB → RGBA로 승격
+                        alpha = np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)
+                        return np.concatenate([arr, alpha], axis=-1)
+                    return arr
+                if arr.ndim == 2:  # gray → RGB → RGBA
+                    arr = np.stack([arr] * 3, axis=-1).astype(np.uint8)
+                    alpha = np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)
+                    return np.concatenate([arr, alpha], axis=-1)
+                return None
+            else:
+                return None
+
+            # 여기부터는 im이 PIL.Image
+            im.load()  # lazy 참조 제거
+            # 모드 정규화: RGBA 고정
+            if im.mode != "RGBA":
+                im = im.convert("RGBA")
+            arr = np.array(im)
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+            return arr
+        except Exception as e:
+            st.error(f"미리보기 변환 실패: {e}")
+            return None
 
     # ---- 합성 미리보기 ----
     def update_preview(item_files, template_files):
@@ -57,13 +101,13 @@ def run():
             "out_format": "PNG",
         }
         result = compose_one_bytes(item_img, template_img, **opts)
-
         if result:
             buf, ext = result
+            # PIL.Image로 로드 → RGBA로 고정 → copy()로 버퍼 참조 분리
             im = Image.open(io.BytesIO(buf.getvalue()))
             im.load()
             im = im.convert("RGBA").copy()
-            ss.preview_img = im
+            ss.preview_img = im  # 세션에는 PIL.Image 보관 (표시 시 다시 ndarray로 변환)
 
     # ---- 배치 합성 & Zip 생성 ----
     def run_batch_composition(item_files, template_files, fmt, quality, shop_variable):
@@ -170,28 +214,18 @@ def run():
         # 설정 변경 시 미리보기 업데이트
         update_preview(item_files, template_files)
 
+        # ---- 미리보기 (절대 안전 경로: ndarray RGBA로 렌더) ----
         st.subheader("미리보기")
-        img = ss.get("preview_img", None)
+        raw = ss.get("preview_img", None)
+        arr = to_numpy_rgba(raw)
 
-        # bytes 방어 → PIL.Image로 변환
-        if isinstance(img, (bytes, bytearray)):
-            try:
-                bio = io.BytesIO(img)
-                im = Image.open(bio)
-                im.load()
-                im = im.convert("RGBA").copy()
-                img = im
-                ss.preview_img = im
-            except Exception as e:
-                st.error(f"미리보기 디코딩 실패: {e}")
-                img = None
+        # 디버그가 필요하면 아래 한 줄 잠깐 열어보세요:
+        # st.caption(f"preview: {type(raw)} -> {None if arr is None else ('ndarray '+str(arr.shape))}")
 
-        if isinstance(img, Image.Image):
-            st.image(img, caption="미리보기 (첫번째 조합)", use_container_width=True)
-        elif img is None:
-            st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
+        if arr is not None:
+            st.image(arr, caption="미리보기 (첫번째 조합)", use_container_width=True)
         else:
-            st.warning(f"지원하지 않는 미리보기 타입: {type(img)}")
+            st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
 
         st.button(
             "생성하기",
