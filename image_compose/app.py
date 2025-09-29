@@ -27,6 +27,7 @@ def run():
             "template_uploader_key": 0,
             "preview_img_bytes": None, # PIL 객체 대신 bytes를 저장하여 안정성 확보
             "download_info": None,
+            "preview_index": 0,  # 현재 미리보기 아이템 인덱스
         }
         for k, v in defaults.items():
             if k not in st.session_state:
@@ -36,13 +37,14 @@ def run():
     ss = st.session_state
 
     # ---- 합성 미리보기 ----
-    def update_preview(item_files, template_files):
+    def update_preview(item_files, template_files, index):
         ss.preview_img_bytes = None
-        if not item_files or not template_files:
+        # 유효한 인덱스이고 파일이 있는지 확인
+        if not item_files or not template_files or index >= len(item_files):
             return
 
-        item_img = Image.open(item_files[0])
-        template_img = Image.open(template_files[0])
+        item_img = Image.open(item_files[index]) # 지정된 인덱스의 아이템 사용
+        template_img = Image.open(template_files[0]) # 템플릿은 항상 첫번째 것을 사용
 
         if not has_useful_alpha(ensure_rgba(item_img)):
             try:
@@ -136,6 +138,7 @@ def run():
         )
         if st.button("아이템 리스트 삭제"):
             ss.item_uploader_key += 1
+            ss.preview_index = 0 # 인덱스 초기화
             st.rerun()
 
         template_files = st.file_uploader(
@@ -165,20 +168,46 @@ def run():
         )
         c3.selectbox("그림자 프리셋", list(SHADOW_PRESETS.keys()), key="shadow_preset")
 
+        # 아이템 파일 목록이 바뀌면 인덱스를 0으로 리셋하여 오류 방지
+        if "last_item_count" not in ss or ss.last_item_count != len(item_files):
+            ss.preview_index = 0
+        ss.last_item_count = len(item_files)
+
         # 설정 변경 시 미리보기 업데이트
-        update_preview(item_files, template_files)
+        update_preview(item_files, template_files, ss.preview_index)
 
         # ---- 미리보기 (가장 안정적인 방법: bytes 직접 렌더) ----
         st.subheader("미리보기")
         preview_bytes = ss.get("preview_img_bytes", None)
         
-        if preview_bytes:
+        if preview_bytes and item_files:
             # 세션에 저장된 bytes를 직접 st.image에 전달합니다.
-            # use_container_width 인수를 제거하여 버전 호환성 문제를 해결합니다.
-            st.image(preview_bytes, caption="미리보기 (첫번째 조합)")
+            st.image(preview_bytes, caption=f"미리보기 ({ss.preview_index + 1}/{len(item_files)})")
         else:
             # preview_bytes가 없을 때 (초기 상태 또는 생성 실패)
             st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
+
+        # ---- 미리보기 네비게이션 ----
+        if item_files and len(item_files) > 1:
+            col1, col2, col3 = st.columns([2, 3, 2])
+
+            def prev_item():
+                if ss.preview_index > 0:
+                    ss.preview_index -= 1
+
+            def next_item():
+                if ss.preview_index < len(item_files) - 1:
+                    ss.preview_index += 1
+            
+            with col1:
+                st.button("◀ 이전", on_click=prev_item, use_container_width=True, disabled=(ss.preview_index == 0))
+            
+            with col2:
+                 st.markdown(f"<p style='text-align: center; margin-top: 0.5rem;'>{item_files[ss.preview_index].name}</p>", unsafe_allow_html=True)
+
+            with col3:
+                st.button("다음 ▶", on_click=next_item, use_container_width=True, disabled=(ss.preview_index >= len(item_files) - 1))
+
 
         st.button(
             "생성하기",
