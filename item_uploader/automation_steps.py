@@ -592,89 +592,101 @@ def run_step_6(sh: gspread.Spreadsheet, shop_code: str):
     print("Step 6: Generate Cover Image URLs Finished.")
 
 # ==============================================================================
-# STEP 7: 최종 템플릿 분할 & 다운로드
+# STEP 7: 최종 템플릿 분할 & 다운로드 (★수정된 코드 적용★)
 # ==============================================================================
 
-def run_step_7(sh: gspread.Spreadsheet):
+def run_step_7(sh: gspread.Spreadsheet) -> BytesIO | None:
     """
-    TEM_OUTPUT을 TopLevel Category 단위로 분할하여 엑셀 파일 생성
-    - Sheets 429(쿼터) 회피: with_retry에 넉넉한 백오프 적용
-    - get_values() 남용 방지: 범위를 지정해 읽기
+    FAILURE_OUTPUT과 TEM_OUTPUT을 탭으로 포함하는 최종 엑셀 파일을 생성합니다.
+    - TEM_OUTPUT은 TopLevel Category 단위로 분할됩니다.
+    - [수정 1] 각 탭은 원본 헤더를 포함합니다.
+    - [수정 2] 'Failure' 탭이 파일 맨 앞에 추가됩니다.
     """
-    import re
-    from io import BytesIO
-    import pandas as pd
-    from gspread.utils import rowcol_to_a1
-
     print("\n[ Automation ] Starting Step 7: Generating final template file...")
 
-    tem_name = get_tem_sheet_name()
-    tem_ws = safe_worksheet(sh, tem_name)
-
-    # 1) 헤더 1행 먼저 읽고, 대략적인 범위를 계산해 한 번에 읽기
-    header = with_retry(lambda: tem_ws.row_values(1), retries=8, base_delay=3.0, backoff=2.0, max_delay=70.0)
-    if not header:
-        print("[!] TEM_OUTPUT header is empty. Cannot generate file.")
-        return None
-
-    max_cols = max(1, len(header))
-    # 행 수는 넉넉히 20000까지 (필요시 ENV로 튜닝 가능)
-    max_rows = 20000
-    rng = f"A1:{rowcol_to_a1(max_rows, max_cols)}"
-
-    all_data = with_retry(lambda: tem_ws.get(rng), retries=8, base_delay=3.0, backoff=2.0, max_delay=70.0)
-    if not all_data:
-        print("[!] TEM_OUTPUT sheet is empty within range. Cannot generate file.")
-        return None
-
-    # 2) DataFrame 구성
-    df = pd.DataFrame(all_data)
-    # 최소 2열은 있다고 가정 (1열: PID, 2열: Category/Headers 시작)
-    if df.shape[1] < 2:
-        print("[!] TEM_OUTPUT has insufficient columns.")
-        return None
-
-    # 'category' 헤더가 있는 행 인덱스 탐지 (두번째 컬럼 기준)
-    # 일부 행은 빈 값일 수 있으니, 문자열로 변환 후 비교
-    col1 = df.iloc[:, 1].astype(str).str.lower()
-    header_indices = col1.index[col1.eq('category')]
-    if len(header_indices) == 0:
-        print("[!] No valid header rows found in TEM_OUTPUT.")
-        return None
-
-    # 3) 분할 저장
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for i, header_idx in enumerate(header_indices):
-            start_row = header_idx + 1
-            end_row = header_indices[i + 1] if i + 1 < len(header_indices) else len(df)
+        # ==================================
+        # 요청사항 2: Failure 탭 추가
+        # ==================================
+        try:
+            # 'FAILURE_OUTPUT'은 실제 환경의 시트 이름으로 변경해야 합니다.
+            failure_sheet_name = "FAILURE_OUTPUT"
+            failure_ws = safe_worksheet(sh, failure_sheet_name)
+            if failure_ws:
+                failure_data = with_retry(lambda: failure_ws.get_all_records())
+                if failure_data:
+                    failure_df = pd.DataFrame(failure_data)
+                    failure_df.to_excel(writer, sheet_name="Failure", index=False, header=True)
+                    print(f"✅ Sheet '{failure_sheet_name}' was successfully added as 'Failure' tab.")
+                else:
+                    print(f"⚠️ Sheet '{failure_sheet_name}' is empty. Skipping.")
+            else:
+                 print(f"⚠️ Sheet '{failure_sheet_name}' not found. Skipping.")
+        except Exception as e:
+            print(f"[!] Error processing failure sheet: {e}")
 
-            chunk_df = df.iloc[start_row:end_row]
-            if chunk_df.empty:
+        # ==================================
+        # TEM_OUTPUT 분할 로직
+        # ==================================
+        tem_name = get_tem_sheet_name()
+        tem_ws = safe_worksheet(sh, tem_name)
+
+        if not tem_ws:
+            print(f"[!] Sheet '{tem_name}' not found. Cannot proceed with template generation.")
+            output.seek(0)
+            return output if output.getbuffer().nbytes > 0 else None
+
+        all_data = with_retry(lambda: tem_ws.get_all_values())
+        if not all_data or len(all_data) < 2:
+            print("[!] TEM_OUTPUT sheet has no data. Cannot generate file.")
+            output.seek(0)
+            return output if output.getbuffer().nbytes > 0 else None
+
+        df = pd.DataFrame(all_data)
+        col1 = df.iloc[:, 1].astype(str).str.lower()
+        header_indices = col1.index[col1.eq('category')]
+
+        if len(header_indices) == 0:
+            print("[!] No valid header rows found in TEM_OUTPUT.")
+            output.seek(0)
+            return output if output.getbuffer().nbytes > 0 else None
+
+        # 분할 저장 (헤더 포함)
+        for i, header_idx in enumerate(header_indices):
+            start_row = header_idx
+            end_row = header_indices[i + 1] if i + 1 < len(header_indices) else len(df)
+            
+            chunk_with_header_df = df.iloc[start_row:end_row]
+            if len(chunk_with_header_df) < 2:
                 continue
 
-            # 첫 데이터 행의 카테고리로 Top Level 판단
+            # ==================================
+            # 요청사항 1: 각 탭에 헤더 유지
+            # ==================================
+            # 첫 행을 헤더로, 나머지를 데이터로 분리
+            new_header = chunk_with_header_df.iloc[0]
+            chunk_data_df = chunk_with_header_df[1:].copy()
+            chunk_data_df.columns = new_header
+
             try:
-                first_cat = str(chunk_df.iloc[0, 1] or "")
+                first_cat = str(chunk_data_df.iloc[0, 1] or "")
             except Exception:
                 first_cat = "UNKNOWN"
 
             top_level_name = top_of_category(first_cat) or "UNKNOWN"
-            # 시트명 제약 문자 제거 + 31자 제한
             sheet_name = re.sub(r'[\\s/\\\\*?:\\[\\]]', '_', top_level_name.title())[:31] or "Sheet1"
 
-            # 첫 컬럼(Product ID) 제거 → B열부터 저장
-            sub_df = chunk_df.iloc[:, 1:].copy()
+            sub_df = chunk_data_df.iloc[:, 1:].copy()
 
-            # SKU(첫 열) 공백-하이픈 정리: 'ABC - 123' -> 'ABC-123'
             try:
                 sub_df.iloc[:, 0] = sub_df.iloc[:, 0].astype(str).str.replace(r'\s*-\s*', '-', regex=True)
             except Exception:
                 pass
-
-            # 헤더 없는 raw로 저장 (원본 템플릿 포맷 유지)
-            sub_df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
+            
+            # header=True로 설정하여 각 시트에 헤더를 포함하여 저장
+            sub_df.to_excel(writer, sheet_name=sheet_name, index=False, header=True)
 
     output.seek(0)
-    print("Step 7: Final template file generated successfully.")
+    print("✅ Step 7: Final template file generated successfully.")
     return output
