@@ -35,7 +35,7 @@ def run():
     init_state()
     ss = st.session_state
 
-    # ---- PIL/bytes/ndarray → NumPy RGBA(uint8)로 정규화 ----
+    # ---- PIL/bytes/ndarray → NumPy RGBA(uint8)로 정규화 (현재 미리보기에서는 사용되지 않음)----
     def to_numpy_rgba(x) -> np.ndarray | None:
         try:
             # PIL.Image
@@ -214,26 +214,16 @@ def run():
         # 설정 변경 시 미리보기 업데이트
         update_preview(item_files, template_files)
 
-        # ---- 미리보기 (절대 안전 경로: ndarray RGBA로 렌더) ----
+        # ---- 미리보기 (가장 안정적인 방법: PIL Image 직접 렌더) ----
         st.subheader("미리보기")
-        raw = ss.get("preview_img", None)
+        preview_image = ss.get("preview_img", None)
         
-        # 디버그가 필요하면 아래 한 줄 잠깐 열어보세요:
-        # st.caption(f"preview: {type(raw)}")
-        
-        if raw is None:
-            # Case 1: 아직 업로드된 파일이 없으면 안내 문구 표시
-            st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
+        if preview_image:
+            # PIL.Image 객체를 직접 st.image에 전달합니다.
+            st.image(preview_image, caption="미리보기 (첫번째 조합)", use_container_width=True)
         else:
-            # Case 2: 업로드된 이미지가 있으면 numpy 배열로 변환 시도
-            arr = to_numpy_rgba(raw)
-        
-            if arr is not None:
-                # Case 2-1: 변환 성공 시 이미지 표시
-                st.image(arr, caption="미리보기 (첫번째 조합)", use_container_width=True)
-            else:
-                # Case 2-2: 변환 실패 시 에러 메시지 표시
-                st.error("이미지를 생성하는 데 실패했습니다. 입력 값을 확인하거나 다시 시도해주세요.")
+            # preview_img가 없을 때 (초기 상태 또는 생성 실패)
+            st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
 
         st.button(
             "생성하기",
@@ -259,3 +249,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
