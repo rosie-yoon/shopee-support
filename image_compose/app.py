@@ -25,7 +25,7 @@ def run():
             "shadow_preset": "off",
             "item_uploader_key": 0,
             "template_uploader_key": 0,
-            "preview_img": None,   # PIL.Image | bytes | np.ndarray
+            "preview_img_bytes": None, # PIL 객체 대신 bytes를 저장하여 안정성 확보
             "download_info": None,
         }
         for k, v in defaults.items():
@@ -35,52 +35,9 @@ def run():
     init_state()
     ss = st.session_state
 
-    # ---- PIL/bytes/ndarray → NumPy RGBA(uint8)로 정규화 (현재 미리보기에서는 사용되지 않음)----
-    def to_numpy_rgba(x) -> np.ndarray | None:
-        try:
-            # PIL.Image
-            if isinstance(x, Image.Image):
-                im = x
-            # bytes/bytearray
-            elif isinstance(x, (bytes, bytearray)):
-                bio = io.BytesIO(x)
-                im = Image.open(bio)
-            # ndarray
-            elif isinstance(x, np.ndarray):
-                arr = x
-                if arr.dtype != np.uint8:
-                    arr = np.clip(arr, 0, 255).astype(np.uint8)
-                if arr.ndim == 3 and arr.shape[2] in (3, 4):
-                    # RGB/ RGBA 그대로 사용
-                    if arr.shape[2] == 3:
-                        # RGB → RGBA로 승격
-                        alpha = np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)
-                        return np.concatenate([arr, alpha], axis=-1)
-                    return arr
-                if arr.ndim == 2:  # gray → RGB → RGBA
-                    arr = np.stack([arr] * 3, axis=-1).astype(np.uint8)
-                    alpha = np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)
-                    return np.concatenate([arr, alpha], axis=-1)
-                return None
-            else:
-                return None
-
-            # 여기부터는 im이 PIL.Image
-            im.load()  # lazy 참조 제거
-            # 모드 정규화: RGBA 고정
-            if im.mode != "RGBA":
-                im = im.convert("RGBA")
-            arr = np.array(im)
-            if arr.dtype != np.uint8:
-                arr = np.clip(arr, 0, 255).astype(np.uint8)
-            return arr
-        except Exception as e:
-            st.error(f"미리보기 변환 실패: {e}")
-            return None
-
     # ---- 합성 미리보기 ----
     def update_preview(item_files, template_files):
-        ss.preview_img = None
+        ss.preview_img_bytes = None
         if not item_files or not template_files:
             return
 
@@ -103,11 +60,8 @@ def run():
         result = compose_one_bytes(item_img, template_img, **opts)
         if result:
             buf, ext = result
-            # PIL.Image로 로드 → RGBA로 고정 → copy()로 버퍼 참조 분리
-            im = Image.open(io.BytesIO(buf.getvalue()))
-            im.load()
-            im = im.convert("RGBA").copy()
-            ss.preview_img = im  # 세션에는 PIL.Image 보관 (표시 시 다시 ndarray로 변환)
+            # PIL 객체가 아닌, raw bytes를 세션에 직접 저장
+            ss.preview_img_bytes = buf.getvalue()
 
     # ---- 배치 합성 & Zip 생성 ----
     def run_batch_composition(item_files, template_files, fmt, quality, shop_variable):
@@ -214,15 +168,15 @@ def run():
         # 설정 변경 시 미리보기 업데이트
         update_preview(item_files, template_files)
 
-        # ---- 미리보기 (가장 안정적인 방법: PIL Image 직접 렌더) ----
+        # ---- 미리보기 (가장 안정적인 방법: bytes 직접 렌더) ----
         st.subheader("미리보기")
-        preview_image = ss.get("preview_img", None)
+        preview_bytes = ss.get("preview_img_bytes", None)
         
-        if preview_image:
-            # PIL.Image 객체를 직접 st.image에 전달합니다.
-            st.image(preview_image, caption="미리보기 (첫번째 조합)", use_container_width=True)
+        if preview_bytes:
+            # 세션에 저장된 bytes를 직접 st.image에 전달합니다.
+            st.image(preview_bytes, caption="미리보기 (첫번째 조합)", use_container_width=True)
         else:
-            # preview_img가 없을 때 (초기 상태 또는 생성 실패)
+            # preview_bytes가 없을 때 (초기 상태 또는 생성 실패)
             st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
 
         st.button(
