@@ -61,8 +61,12 @@ def run():
             "out_format": "PNG",
         }
         result = compose_one_bytes(item_img, template_img, **opts)
+
         if result:
-            ss.preview_img = result[0].getvalue()
+            buf, ext = result
+            # 👉 BytesIO → PIL.Image 변환 후 저장
+            ss.preview_img = Image.open(io.BytesIO(buf.getvalue()))
+
 
     # ---- 배치 합성 & Zip 생성 ----
     def run_batch_composition(item_files, template_files, fmt, quality, shop_variable):
