@@ -217,19 +217,23 @@ def run():
         # ---- 미리보기 (절대 안전 경로: ndarray RGBA로 렌더) ----
         st.subheader("미리보기")
         raw = ss.get("preview_img", None)
-        arr = to_numpy_rgba(raw)
-
+        
         # 디버그가 필요하면 아래 한 줄 잠깐 열어보세요:
-        # st.caption(f"preview: {type(raw)} -> {None if arr is None else ('ndarray '+str(arr.shape))}")
-
-        # arr 변수에 유효한 이미지 데이터가 있는지 먼저 확인합니다.
-        if arr is not None:
-            st.image(arr, caption="미리보기 (첫번째 조합)", use_container_width=True)
-        else:
-            # 이미지 생성에 실패하면 에러 메시지를 보여줍니다.
-            st.error("이미지를 생성하는 데 실패했습니다. 입력 값을 확인하거나 다시 시도해주세요.")
-        else:
+        # st.caption(f"preview: {type(raw)}")
+        
+        if raw is None:
+            # Case 1: 아직 업로드된 파일이 없으면 안내 문구 표시
             st.caption("파일을 업로드하면 미리보기가 표시됩니다.")
+        else:
+            # Case 2: 업로드된 이미지가 있으면 numpy 배열로 변환 시도
+            arr = to_numpy_rgba(raw)
+        
+            if arr is not None:
+                # Case 2-1: 변환 성공 시 이미지 표시
+                st.image(arr, caption="미리보기 (첫번째 조합)", use_container_width=True)
+            else:
+                # Case 2-2: 변환 실패 시 에러 메시지 표시
+                st.error("이미지를 생성하는 데 실패했습니다. 입력 값을 확인하거나 다시 시도해주세요.")
 
         st.button(
             "생성하기",
