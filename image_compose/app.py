@@ -162,8 +162,9 @@ def run():
         )
         c2.selectbox(
             "리사이즈",
-            [1.0, 0.9, 0.8, 0.7, 0.6],
-            format_func=lambda x: f"{int(x*100)}%" if x < 1.0 else "없음",
+            [1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6], # 확대 옵션 추가
+            index=5, # 기본값을 1.0 (100%)으로 설정
+            format_func=lambda x: "원본 (100%)" if x == 1.0 else f"{int(x*100)}%",
             key="resize_ratio",
         )
         c3.selectbox("그림자 프리셋", list(SHADOW_PRESETS.keys()), key="shadow_preset")
