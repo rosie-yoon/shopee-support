@@ -171,7 +171,12 @@ def _run_automation(logs: List[str]):
 # ============================================================
 
 def _render():
-    st.set_page_config(page_title="Copy Template", page_icon="⬆️", layout="centered")
+    from streamlit.errors import StreamlitAPIException
+    try:
+        st.set_page_config(page_title="Copy Template", page_icon="⬆️", layout="centered")
+    except StreamlitAPIException:
+        # 이미 상위 페이지에서 set_page_config가 호출된 경우 무시하고 계속 진행
+        pass
     load_env()
 
     _sidebar_settings()
@@ -247,7 +252,8 @@ def _render():
             lines.append(f'<div style="{cls}">• {msg}</div>')
         st.markdown(
             '<div style="background:#F9F9F9;border:1px solid #eee;border-radius:8px;padding:12px;max-height:360px;overflow:auto">' +
-            "\n".join(lines) +
+            "
+".join(lines) +
             "</div>",
             unsafe_allow_html=True,
         )
