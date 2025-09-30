@@ -18,24 +18,23 @@ from .main_controller import ShopeeAutomation
 # (선택) 버전 로깅: 디버깅 편의
 # ------------------------------------------------------------
 def _log_versions():
-    mods = ["pandas", "openpyxl", "gspread"]
-    for m in mods:
-        try:
-            v = importlib.import_module(m).__version__
-        except Exception:
-            v = "not-found"
-        logging.warning(f"[VERSIONS] {m}={v}")
-_log_versions()
+    try:
+        import pkg_resources  # type: ignore
+        ver = pkg_resources.get_distribution("streamlit").version
+    except Exception:
+        ver = "unknown"
+    logging.info(f"[BOOT] Streamlit={ver}")
 
 
 # ------------------------------------------------------------
-# 쿼리스트링 호환 헬퍼 (신/구 API 모두 지원)
+# URL 파라미터 헬퍼 (신/구 API 모두 지원)
 # ------------------------------------------------------------
 def set_query_params(**kwargs):
     try:
         st.query_params.update(kwargs)  # Streamlit ≥ 1.36
     except Exception:
         st.experimental_set_query_params(**kwargs)  # 구버전 백업
+
 
 def get_query_params():
     try:
@@ -80,40 +79,35 @@ def _install_multitenant_override():
     U._resolve_sheet_key = _prefer_session_override  # type: ignore
 
 
-def run() -> None:
-    """멀티페이지(Bridge) 환경에서 호출되는 진입점."""
+# ------------------------------------------------------------
+# 페이지 빌드
+# ------------------------------------------------------------
+def main():
+    st.set_page_config(page_title="Copy Template", page_icon="⬆️", layout="centered")
+    _log_versions()
+
+    # ---- 환경 변수 로드 ----
     load_env()
 
-    # ── 세션 상태 초기화 ─────────────────────────────────────────
-    defaults = {
-        "upload_success": False,
-        "automation_success": False,
-        "download_file": None,
-        # 메인 시트 오버라이드(키 또는 URL)
-        "OVERRIDE_GOOGLE_SHEET_KEY": "",
-        # 이미지 호스팅 주소(세션 우선)
-        "IMAGE_HOSTING_URL_STATE": get_env("IMAGE_HOSTING_URL"),
-    }
-    for k, v in defaults.items():
-        st.session_state.setdefault(k, v)
-
-    # ── 딥링크에서 자동 복원(최초 1회 입력 목적) ────────────────────
+    # ---- URL 파라미터 복원 ----
     params = get_query_params()
+
+    # session_state 초기화: 내부 상태 키
+    st.session_state.setdefault("OVERRIDE_GOOGLE_SHEET_KEY", "")
+    st.session_state.setdefault("IMAGE_HOSTING_URL_STATE", get_env("IMAGE_HOSTING_URL") or "")
+
+    # URL 파라미터(main/img) → session_state로 복원(초기 1회)
     if not st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY") and params.get("main"):
-        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = params["main"][0] if isinstance(params["main"], list) else params["main"]
+        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = (
+            params["main"][0] if isinstance(params["main"], list) else params["main"]
+        )
     if not st.session_state.get("IMAGE_HOSTING_URL_STATE") and params.get("img"):
         raw_img = params["img"][0] if isinstance(params["img"], list) else params["img"]
         st.session_state["IMAGE_HOSTING_URL_STATE"] = (raw_img or "").rstrip("/")
 
     # 사이드바 입력 위젯 기본값은 session_state에만 세팅 (value= 사용 금지)
-    st.session_state.setdefault(
-        "OVERRIDE_GOOGLE_SHEET_KEY_INPUT",
-        st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
-    )
-    st.session_state.setdefault(
-        "IMAGE_HOSTING_URL_INPUT",
-        st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
-    )
+    st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
+    st.session_state["IMAGE_HOSTING_URL_INPUT"] = st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
 
     # ── 사이드바(항상 표시): 최소 설정 + 적용 버튼 ────────────────
     with st.sidebar:
@@ -132,51 +126,70 @@ def run() -> None:
 
         st.markdown('<div class="sb-label">샵 복제 시트 URL</div>', unsafe_allow_html=True)
         st.text_input(
-            "샵 복제 시트 URL",
+            label="샵 복제 시트 URL",
             key="OVERRIDE_GOOGLE_SHEET_KEY_INPUT",
-            placeholder="https://docs.google.com/spreadsheets/d/...",
             label_visibility="collapsed",
+            placeholder="https://docs.google.com/spreadsheets/d/…",
         )
 
-        st.markdown('<div class="sb-label">이미지 호스팅 주소</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sb-label">이미지 호스팅 주소 (선택)</div>', unsafe_allow_html=True)
         st.text_input(
-            "이미지 호스팅 주소",
+            label="이미지 호스팅 주소",
             key="IMAGE_HOSTING_URL_INPUT",
-            placeholder="https://test.domain.com/",
             label_visibility="collapsed",
+            placeholder="https://your.cdn.host",
         )
 
-        if st.button("적용", type="primary"):
-            try:
-                # 시트 URL/키 정규화 (비우면 오버라이드 해제 → Defaults 사용)
-                raw = (st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] or "").strip()
-                if raw:
-                    sid = extract_sheet_id(raw)
-                    if not sid:
-                        raise ValueError("유효한 Google Sheets URL/키가 아닙니다.")
-                    st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = sid
-                else:
-                    st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            if st.button("적용", type="primary"):
+                try:
+                    # 시트 URL/키 정규화 (비우면 오버라이드 해제 → Defaults 사용)
+                    raw = (st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] or "").strip()
+                    if raw:
+                        sid = extract_sheet_id(raw)
+                        if not sid:
+                            raise ValueError("유효한 Google Sheets URL/키가 아닙니다.")
+                        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = sid
+                        # ★ 입력창에도 정규화된 SID 반영
+                        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = sid
+                    else:
+                        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
+                        # ★ 입력창 클리어
+                        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = ""
 
-                # 이미지 호스팅 주소 정규화 (비우면 기본값 유지)
-                host = (st.session_state["IMAGE_HOSTING_URL_INPUT"] or "").strip()
-                if host:
-                    if not (host.startswith("http://") or host.startswith("https://")):
-                        raise ValueError("이미지 호스팅 주소는 http(s):// 로 시작해야 합니다.")
-                    st.session_state["IMAGE_HOSTING_URL_STATE"] = host.rstrip("/")
-                else:
-                    st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
+                    # 이미지 호스팅 주소 정규화 (비우면 기본값 유지)
+                    host = (st.session_state["IMAGE_HOSTING_URL_INPUT"] or "").strip()
+                    if host:
+                        if not (host.startswith("http://") or host.startswith("https://")):
+                            raise ValueError("이미지 호스팅 주소는 http(s):// 로 시작해야 합니다.")
+                        st.session_state["IMAGE_HOSTING_URL_STATE"] = host.rstrip("/")
+                        # ★ 입력창에도 정규화된 호스트 반영
+                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = host.rstrip("/")
+                    else:
+                        st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
+                        # ★ 기본값을 입력창에도 반영
+                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = st.session_state["IMAGE_HOSTING_URL_STATE"]
 
-                # 딥링크 저장 → 북마크/재접속 시 자동 복원 (신/구 API 호환)
-                set_query_params(
-                    main=st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"],
-                    img=st.session_state["IMAGE_HOSTING_URL_STATE"],
-                )
+                    # 딥링크 저장 → 북마크/재접속 시 자동 복원 (신/구 API 호환)
+                    set_query_params(
+                        main=st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"],
+                        img=st.session_state["IMAGE_HOSTING_URL_STATE"],
+                    )
 
-                st.toast("설정이 적용되었습니다 ✅")
-                st.rerun()  # 최신 API
-            except Exception as e:
-                st.error(str(e))
+                    st.toast("설정이 적용되었습니다 ✅")
+                    st.rerun()  # 최신 API
+                except Exception as e:
+                    st.error(str(e))
+        with col_b:
+            if st.button("초기화"):
+                st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
+                st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = ""
+                st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
+                st.session_state["IMAGE_HOSTING_URL_INPUT"] = st.session_state["IMAGE_HOSTING_URL_STATE"]
+                set_query_params(main="", img=st.session_state["IMAGE_HOSTING_URL_STATE"])
+                st.toast("설정이 초기화되었습니다")
+                st.rerun()
 
     # ── 멀티테넌트 오버라이드 설치(메인만 오버라이드) ───────────────
     _install_multitenant_override()
@@ -193,162 +206,97 @@ def run() -> None:
     # ---- CSS (전역 + 사이드바 전용) ----
     st.markdown(
         """
-<style>
-html, body, [class*="st-"] { font-family: 'Inter','Noto Sans KR',sans-serif; }
-div[data-testid="stAppViewContainer"] > .main .block-container {
-  padding-top: 2rem; padding-bottom: 2rem; max-width: 900px;
-}
-.stButton>button {
-  border-radius: 8px; padding: 8px 18px; font-weight: 600; border: none;
-  color: white; background-color: #1A73E8; transition: background-color 0.3s ease;
-}
-.stButton>button:hover { background-color: #0e458c; }
-.stButton>button:disabled { background-color: #E0E0E0; color: #A0A0A0; }
-.stFileUploader { border: 2px dashed #E0E0E0; border-radius: 12px; padding: 20px; background-color: #F9F9F9; }
-.log-container {
-  background-color: #F9F9F9; border-radius: 8px; padding: 15px; margin-top: 15px;
-  font-family: 'SF Mono','Menlo',monospace; font-size: 0.9em; max-height: 400px; overflow-y: auto; border: 1px solid #E0E0E0;
-}
-.log-success { color: #2E7D32; } .log-error { color: #C62828; } .log-warn { color: #EF6C00; } .log-info { color: #333; }
-h1, h2, h3, h5 { font-weight: 700; }
-
-/* 사이드바 도움말 박스 */
-[data-testid="stSidebar"] .sb-help {
-  background: #F2F4F7;        /* 연한 회색 */
-  color: #6B7280;             /* 텍스트 회색 */
-  border: 1px solid #E5E7EB;  /* 얇은 테두리 */
-  border-radius: 10px;
-  padding: 10px 12px;
-  line-height: 1.5;
-  margin: 4px 0 14px 0;       /* 아래쪽 간격 넉넉히 */
-  font-size: 0.92rem;
-}
-/* 라벨 느낌의 소제목 (입력창 위) */
-[data-testid="stSidebar"] .sb-label {
-  font-weight: 600;
-  font-size: 0.95rem;
-  color: #374151;
-  margin: 10px 0 6px 0;       /* 라벨과 인풋 사이 간격 */
-}
-/* 링크 컬러 */
-[data-testid="stSidebar"] .sb-help a {
-  color: #2563EB;
-  text-decoration: none;
-}
-[data-testid="stSidebar"] .sb-help a:hover {
-  text-decoration: underline;
-}
-</style>
-""",
+        <style>
+        div[data-testid="stAppViewContainer"] > .main .block-container {
+          padding-top: 2rem; padding-bottom: 2rem; max-width: 900px;
+        }
+        .stButton>button {
+          border-radius: 8px; padding: 8px 18px; font-weight: 600; border: none;
+          color: white; background-color: #1A73E8; transition: background-color 0.3s ease;
+        }
+        .stButton>button:hover { background-color: #0e458c; }
+        .stButton>button:disabled { background-color: #E0E0E0; color: #A0A0A0; }
+        .stFileUploader { border: 2px dashed #E0E0E0; border-radius: 12px; padding: 20px; background-color: #F9F9F9; }
+        .log-container {
+          background-color: #F9F9F9; border-radius: 8px; padding: 15px; margin-top: 15px;
+          font-family: 'SF Mono','Menlo',monospace; font-size: 0.9em; max-height: 400px; overflow-y: auto; border: 1px solid #E0E0E0;
+        }
+        .log-success { color: #2E7D32; } .log-error { color: #C62828; } .log-info { color: #1565C0; }
+        .sb-help { font-size: 0.9em; color: #555; margin-bottom: 6px; }
+        .sb-label { font-weight: 600; margin: 12px 0 6px; }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
-    # ---- 메인 앱 ----
-    def main_application():
-        st.markdown(
-            "<p>아래 영역에 BASIC, MEDIA, SALES 엑셀 파일을 업로드하고 샵 코드를 입력한 후, 실행 버튼을 눌러주세요.</p>",
-            unsafe_allow_html=True,
-        )
+    # ---- 업로드 섹션 ----
+    st.header("1) 파일 업로드")
+    st.caption("템플릿 시트에 반영할 원본 엑셀(.xlsx)을 업로드하세요.")
 
-        # --- 입력 영역 ---
-        st.subheader("1. 파일 및 샵 코드 입력")
-        uploaded_files = st.file_uploader(
-            "BASIC, MEDIA, SALES 파일을 한 번에 선택하거나 드래그 앤 드롭하세요.",
-            type="xlsx",
-            accept_multiple_files=True,
-            label_visibility="collapsed",
-        )
+    uploaded_files = st.file_uploader(
+        "엑셀 파일 업로드",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        help="여러 개 업로드 가능",
+    )
 
-        shop_code = st.text_input(
-            "샵 코드 입력",
-            placeholder="예: RORO, 01 등 샵 코드를 입력하세요. 커버 이미지 파일의 코드와 동일해야합니다.",
-            key="shop_code_input",
-        )
+    if "LOGS" not in st.session_state:
+        st.session_state["LOGS"] = []
 
-        is_ready = bool(uploaded_files and shop_code)
+    def _log(msg: str, level: str = "info"):
+        st.session_state["LOGS"].append((level, msg))
 
-        if st.button("🚀 파일 업로드 및 실행", key="run_all", disabled=not is_ready):
-            # 상태 초기화
-            st.session_state.upload_success = False
-            st.session_state.automation_success = False
-            st.session_state.download_file = None
-
-            with st.status("자동화 실행 중...", expanded=True) as status:
+    # ---- 업로드/적용 버튼 ----
+    left, right = st.columns([1, 1])
+    with left:
+        if st.button("업로드 & 적용 실행", use_container_width=True):
+            logs: list[str] = []
+            try:
+                files = collect_xlsx_files(uploaded_files)
+                if not files:
+                    st.warning("업로드된 .xlsx 파일이 없습니다.")
+                # 실제 타깃 스프레드시트 확인 로그
+                from .gspread_driver import open_sheet_by_env  # type: ignore
+                sh = open_sheet_by_env()
                 try:
-                    # 1) 업로드 반영
-                    st.write("1/3 - Shop SKU 파일 업로드 중...")
-                    files_dict = collect_xlsx_files(uploaded_files)
-                    if len(files_dict) < 3:
-                        st.session_state.upload_success = False
-                        status.update(label="업로드 실패", state="error", expanded=True)
-                        st.error(
-                            f"파일 3개(BASIC, MEDIA, SALES)를 모두 업로드해야 합니다. (현재 {len(files_dict)}개)"
-                        )
-                        return
+                    tgt_url = getattr(sh, "url", "")
+                    logs.append(f"[INFO] Target Spreadsheet: {tgt_url}")
+                except Exception:
+                    pass
 
-                    logs = apply_uploaded_files(files_dict)
-                    if any("[OK]" in log for log in logs):
-                        st.session_state.upload_success = True
-                        st.write("✅ 파일 업로드 완료!")
-                    else:
-                        status.update(label="업로드 실패", state="error", expanded=True)
-                        st.error("파일을 Google Sheets에 반영하는 데 실패했습니다. 로그를 확인하세요.")
-                        st.json(logs)
-                        return
+                results = apply_uploaded_files(files, logs=logs)
+                _log("파일 업로드 및 적용이 완료되었습니다.", "success")
+                for ln in logs:
+                    _log(ln, "info")
+                if results:
+                    _log(f"총 {len(results)}개 시트가 반영되었습니다.", "success")
+            except Exception as e:
+                _log(f"오류: {e}", "error")
 
-                    # 2) 자동화
-                    st.write("2/3 - 템플릿 생성 자동화 진행 중... (Step 1~6)")
-                    automation = ShopeeAutomation()
-                    progress_bar = st.progress(0, text="자동화 단계를 시작합니다...")
-                    log_container = st.empty()
+    with right:
+        if st.button("자동화(템플릿 생성) 실행", use_container_width=True):
+            try:
+                sa = ShopeeAutomation()
+                sa.run()  # 내부에서 단계별 로그 출력
+                _log("자동화가 완료되었습니다.", "success")
+            except Exception as e:
+                _log(f"자동화 오류: {e}", "error")
 
-                    success, results = automation.run_all_steps_with_progress(
-                        progress_bar, log_container, shop_code
-                    )
-                    st.session_state.automation_success = success
-
-                    if not success:
-                        status.update(label="자동화 실패", state="error", expanded=True)
-                        st.error("자동화 실행 중 오류가 발생했습니다. 위 로그를 확인하세요.")
-                        return
-
-                    # 3) 다운로드 파일 생성
-                    st.write("3/3 - 최종 엑셀 파일 생성 중... (Step 7)")
-                    download_data = automation.run_step7_generate_download()
-
-                    if download_data:
-                        st.session_state.download_file = download_data
-                        status.update(label="🎉 모든 단계 완료!", state="complete", expanded=True)
-                        st.success("모든 자동화 단계가 성공적으로 완료되었습니다!")
-                    else:
-                        st.session_state.automation_success = False
-                        status.update(label="다운로드 파일 생성 실패", state="error", expanded=True)
-                        st.error("최종 엑셀 파일을 생성하는 데 실패했습니다.")
-
-                except Exception as e:
-                    status.update(label="치명적인 오류 발생", state="error", expanded=True)
-                    st.error("프로그램 실행 중 예상치 못한 심각한 오류가 발생했습니다.")
-                    st.exception(e)
-
-        st.divider()
-
-        # --- 다운로드 섹션 ---
-        st.subheader("2. 최종 파일 다운로드")
-        if st.session_state.automation_success and st.session_state.download_file:
-            st.download_button(
-                label="⬇️ 템플릿 파일 다운로드 (.xlsx)",
-                data=st.session_state.download_file,
-                file_name="Shopee_Upload_Template.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        else:
-            st.info("자동화가 성공적으로 완료되면 여기에 다운로드 버튼이 나타납니다.")
-
-    # ---- 라우팅 ----
-    main_application()
+    # ---- 로그 출력 ----
+    st.subheader("실행 로그")
+    if st.session_state["LOGS"]:
+        log_lines = []
+        for level, msg in st.session_state["LOGS"]:
+            cls = {
+                "success": "log-success",
+                "error": "log-error",
+                "info": "log-info",
+            }.get(level, "log-info")
+            log_lines.append(f'<div class="{cls}">• {msg}</div>')
+        st.markdown('<div class="log-container">' + "\n".join(log_lines) + "</div>", unsafe_allow_html=True)
+    else:
+        st.info("아직 실행 로그가 없습니다.")
 
 
-# 단독 실행 지원
 if __name__ == "__main__":
-    st.set_page_config(page_title="ITEM UPLOADER", page_icon="⬆️", layout="wide")
-    run()
+    main()
