@@ -28,6 +28,7 @@ from .automation_steps import (
 # ------------------------------
 # Query param helpers (신/구 API 호환)
 # ------------------------------
+
 def set_query_params(**kwargs) -> None:
     try:
         st.query_params.update(kwargs)  # Streamlit ≥ 1.36
@@ -45,6 +46,7 @@ def get_query_params() -> dict:
 # ------------------------------
 # 세션값 → ENV 주입 (메인 스프레드시트만)
 # ------------------------------
+
 def _sync_env_from_session() -> None:
     sid = (st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY") or "").strip()
     if sid:
@@ -58,6 +60,7 @@ def _sync_env_from_session() -> None:
 # ------------------------------
 # 사이드바 설정 블록
 # ------------------------------
+
 def _sidebar_settings() -> None:
     params = get_query_params()
 
@@ -73,7 +76,7 @@ def _sidebar_settings() -> None:
         v = params["img"][0] if isinstance(params["img"], list) else params["img"]
         st.session_state["IMAGE_HOSTING_URL_STATE"] = (v or "").rstrip("/")
 
-    # 입력창 = 세션값으로 항상 동기화 (setdefault 사용 안 함)
+    # 입력창 = 세션값으로 항상 동기화 (위젯 생성 이전에만 대입)
     st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
     st.session_state["IMAGE_HOSTING_URL_INPUT"] = (
         st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
@@ -95,29 +98,26 @@ def _sidebar_settings() -> None:
         with c1:
             if st.button("적용", type="primary"):
                 try:
-                    raw = (st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] or "").strip()
+                    # 1) 시트 키 정규화 → 상태키만 갱신 (INPUT 키는 건드리지 않음)
+                    raw = (st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY_INPUT") or "").strip()
                     if raw:
                         sid = extract_sheet_id(raw)
                         if not sid:
                             raise ValueError("유효한 Google Sheets URL/키가 아닙니다.")
                         st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = sid
-                        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = sid
                     else:
                         st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
-                        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = ""
 
-                    host = (st.session_state["IMAGE_HOSTING_URL_INPUT"] or "").strip()
+                    # 2) 이미지 호스트 정규화 → 상태키만 갱신
+                    host = (st.session_state.get("IMAGE_HOSTING_URL_INPUT") or "").strip()
                     if host:
                         if not (host.startswith("http://") or host.startswith("https://")):
                             raise ValueError("이미지 호스팅 주소는 http(s):// 로 시작해야 합니다.")
-                        h = host.rstrip("/")
-                        st.session_state["IMAGE_HOSTING_URL_STATE"] = h
-                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = h
+                        st.session_state["IMAGE_HOSTING_URL_STATE"] = host.rstrip("/")
                     else:
-                        base = get_env("IMAGE_HOSTING_URL") or ""
-                        st.session_state["IMAGE_HOSTING_URL_STATE"] = base
-                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = base
+                        st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
 
+                    # 3) 딥링크 갱신 및 재렌더
                     set_query_params(
                         main=st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"],
                         img=st.session_state["IMAGE_HOSTING_URL_STATE"],
@@ -129,11 +129,8 @@ def _sidebar_settings() -> None:
         with c2:
             if st.button("초기화"):
                 st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
-                st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = ""
-                base = get_env("IMAGE_HOSTING_URL") or ""
-                st.session_state["IMAGE_HOSTING_URL_STATE"] = base
-                st.session_state["IMAGE_HOSTING_URL_INPUT"] = base
-                set_query_params(main="", img=base)
+                st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
+                set_query_params(main="", img=st.session_state["IMAGE_HOSTING_URL_STATE"])
                 st.toast("설정이 초기화되었습니다")
                 st.rerun()
 
@@ -141,6 +138,7 @@ def _sidebar_settings() -> None:
 # ------------------------------
 # 자동화 실행 래퍼
 # ------------------------------
+
 def _run_automation(logs: List[str]) -> None:
     try:
         logs.append("[STEP] 1: 준비/검증 시작")
@@ -169,6 +167,7 @@ def _run_automation(logs: List[str]) -> None:
 # ------------------------------
 # 메인 렌더
 # ------------------------------
+
 def _render() -> None:
     # 멀티페이지 환경에서 상위 스크립트가 이미 set_page_config를 호출했을 수 있음 → 호출하지 않음
     load_env()
@@ -250,6 +249,7 @@ def _render() -> None:
 # ------------------------------
 # 공개 엔트리포인트 (pages/*에서 import)
 # ------------------------------
+
 def run() -> None:
     _render()
 
