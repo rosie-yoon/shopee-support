@@ -12,17 +12,25 @@ class ShopeeAutomation:
     Shopee 자동화의 모든 단계를 제어하는 컨트롤러 클래스.
     Streamlit UI와 실제 로직 사이의 다리 역할을 합니다.
     """
+
     def __init__(self):
         # --- 디버깅 로그 추가 ---
-        print("[ ShopeeAutomation ] 클래스 초기화를 시작합니다.")
+        print("[DEBUG] ShopeeAutomation.__init__ 메서드 시작.")
         try:
             load_env()
-            print("[ ShopeeAutomation ] Google Sheets 연결을 시도합니다...")
+            print("[DEBUG] 1/3: 환경 변수 로드 완료.")
+
+            print("[DEBUG] 2/3: 메인 시트(sh) 열기 시도...")
             self.sh = open_sheet_by_env()
+            print("[DEBUG] 2/3: 메인 시트(sh) 열기 성공.")
+
+            print("[DEBUG] 3/3: 참조 시트(ref) 열기 시도...")
             self.ref = open_ref_by_env()
-            print("[ ShopeeAutomation ] Google Sheets 연결 성공 및 클래스 초기화 완료.")
+            print("[DEBUG] 3/3: 참조 시트(ref) 열기 성공.")
+
+            print("[DEBUG] ShopeeAutomation 클래스 초기화가 모두 성공적으로 완료되었습니다.")
         except Exception as e:
-            print(f"[ ShopeeAutomation ] 초기화 중 심각한 오류 발생: {e}") # 터미널 로그용
+            print(f"[DEBUG] __init__ 메서드 실행 중 심각한 오류 발생: {e}") # 터미널 로그용
             st.error(f"Google Sheets 연결에 실패했습니다: {e}")
             st.stop()
 

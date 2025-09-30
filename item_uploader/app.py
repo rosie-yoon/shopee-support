@@ -303,8 +303,15 @@ h1, h2, h3, h5 { font-weight: 700; }
 
                     # 2) 자동화
                     st.write("2/3 - 템플릿 생성 자동화 진행 중... (Step 1~6)")
+                    
+                    # --- 디버깅 로그 추가 ---
+                    print("\n[DEBUG] ShopeeAutomation 클래스 인스턴스 생성을 시작합니다...")
                     automation = ShopeeAutomation()
+                    print("[DEBUG] ShopeeAutomation 클래스 인스턴스 생성 완료.")
+                    # --- 여기까지 ---
+
                     progress_bar = st.progress(0, text="자동화 단계를 시작합니다...")
+                    # ... (이후 코드)
                     log_container = st.empty()
 
                     success, results = automation.run_all_steps_with_progress(
