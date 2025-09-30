@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import logging
 import os
-from typing import Optional, List
+from typing import List
 
 import streamlit as st
 
-# 내부 모듈 (동일 패키지 내부 참조만 사용: 외부에 없는 모듈 의존 제거)
+# 내부 모듈: 현재 레포에 존재하는 파일만 참조
 from .utils_common import (
     load_env,
     get_env,
@@ -26,45 +25,43 @@ from .automation_steps import (
 )
 
 
-# ============================================================
-# Query params helpers (신/구 Streamlit 호환)
-# ============================================================
-
-def set_query_params(**kwargs):
+# ------------------------------
+# Query param helpers (신/구 API 호환)
+# ------------------------------
+def set_query_params(**kwargs) -> None:
     try:
         st.query_params.update(kwargs)  # Streamlit ≥ 1.36
     except Exception:
         st.experimental_set_query_params(**kwargs)  # fallback
 
 
-def get_query_params():
+def get_query_params() -> dict:
     try:
         return dict(st.query_params)
     except Exception:
         return st.experimental_get_query_params()
 
 
-# ============================================================
-# 멀티테넌트: 메인 스프레드시트만 세션 오버라이드
-# (utils_common.open_sheet_by_env가 내부적으로 ENV를 읽으므로,
-#  OVERRIDE_GOOGLE_SHEET_KEY가 있으면 해당 값으로 ENV를 주입)
-# ============================================================
-
-def _sync_env_from_session():
+# ------------------------------
+# 세션값 → ENV 주입 (메인 스프레드시트만)
+# ------------------------------
+def _sync_env_from_session() -> None:
     sid = (st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY") or "").strip()
     if sid:
         os.environ["GOOGLE_SHEET_KEY"] = sid
         os.environ["GOOGLE_SHEETS_SPREADSHEET_ID"] = sid
+    img = (st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or "").strip()
+    if img:
+        os.environ["IMAGE_HOSTING_URL"] = img
 
 
-# ============================================================
-# UI helpers
-# ============================================================
-
-def _sidebar_settings():
+# ------------------------------
+# 사이드바 설정 블록
+# ------------------------------
+def _sidebar_settings() -> None:
     params = get_query_params()
 
-    # 세션 초기화
+    # 세션 기본값
     st.session_state.setdefault("OVERRIDE_GOOGLE_SHEET_KEY", "")
     st.session_state.setdefault("IMAGE_HOSTING_URL_STATE", get_env("IMAGE_HOSTING_URL") or "")
 
@@ -76,12 +73,14 @@ def _sidebar_settings():
         v = params["img"][0] if isinstance(params["img"], list) else params["img"]
         st.session_state["IMAGE_HOSTING_URL_STATE"] = (v or "").rstrip("/")
 
-    # 입력창 값은 세션에서 직접 대입(재렌더 시 항상 동기화)
+    # 입력창 = 세션값으로 항상 동기화 (setdefault 사용 안 함)
     st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
-    st.session_state["IMAGE_HOSTING_URL_INPUT"] = st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
+    st.session_state["IMAGE_HOSTING_URL_INPUT"] = (
+        st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
+    )
 
     with st.sidebar:
-        st.markdown("### ⚙️ 설정")
+        st.markdown("### 설정")
         st.text_input(
             label="샵 복제 시트 URL",
             key="OVERRIDE_GOOGLE_SHEET_KEY_INPUT",
@@ -111,11 +110,13 @@ def _sidebar_settings():
                     if host:
                         if not (host.startswith("http://") or host.startswith("https://")):
                             raise ValueError("이미지 호스팅 주소는 http(s):// 로 시작해야 합니다.")
-                        st.session_state["IMAGE_HOSTING_URL_STATE"] = host.rstrip("/")
-                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = host.rstrip("/")
+                        h = host.rstrip("/")
+                        st.session_state["IMAGE_HOSTING_URL_STATE"] = h
+                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = h
                     else:
-                        st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
-                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = st.session_state["IMAGE_HOSTING_URL_STATE"]
+                        base = get_env("IMAGE_HOSTING_URL") or ""
+                        st.session_state["IMAGE_HOSTING_URL_STATE"] = base
+                        st.session_state["IMAGE_HOSTING_URL_INPUT"] = base
 
                     set_query_params(
                         main=st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"],
@@ -129,19 +130,18 @@ def _sidebar_settings():
             if st.button("초기화"):
                 st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
                 st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = ""
-                st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
-                st.session_state["IMAGE_HOSTING_URL_INPUT"] = st.session_state["IMAGE_HOSTING_URL_STATE"]
-                set_query_params(main="", img=st.session_state["IMAGE_HOSTING_URL_STATE"])
+                base = get_env("IMAGE_HOSTING_URL") or ""
+                st.session_state["IMAGE_HOSTING_URL_STATE"] = base
+                st.session_state["IMAGE_HOSTING_URL_INPUT"] = base
+                set_query_params(main="", img=base)
                 st.toast("설정이 초기화되었습니다")
                 st.rerun()
 
 
-# ============================================================
-# 자동화 (Step1~7) 실행 래퍼
-# ============================================================
-
-def _run_automation(logs: List[str]):
-    # 각 단계는 내부적으로 open_sheet_by_env()를 사용
+# ------------------------------
+# 자동화 실행 래퍼
+# ------------------------------
+def _run_automation(logs: List[str]) -> None:
     try:
         logs.append("[STEP] 1: 준비/검증 시작")
         run_step_1()
@@ -166,25 +166,16 @@ def _run_automation(logs: List[str]):
         raise
 
 
-# ============================================================
-# 메인 UI
-# ============================================================
-
-def _render():
-    from streamlit.errors import StreamlitAPIException
-    try:
-        st.set_page_config(page_title="Copy Template", page_icon="⬆️", layout="centered")
-    except StreamlitAPIException:
-        # 이미 상위 페이지에서 set_page_config가 호출된 경우 무시하고 계속 진행
-        pass
+# ------------------------------
+# 메인 렌더
+# ------------------------------
+def _render() -> None:
+    # 멀티페이지 환경에서 상위 스크립트가 이미 set_page_config를 호출했을 수 있음 → 호출하지 않음
     load_env()
-
     _sidebar_settings()
-
-    # 세션에 설정된 시트 키를 ENV로 주입하여 하위 로직이 동일하게 동작
     _sync_env_from_session()
 
-    st.title("⬆️ Copy Template")
+    st.title("Copy Template")
 
     st.header("1) 파일 업로드")
     st.caption("템플릿 시트에 반영할 원본 엑셀(.xlsx)을 업로드하세요.")
@@ -200,7 +191,7 @@ def _render():
     if "LOGS" not in st.session_state:
         st.session_state["LOGS"] = []
 
-    def _log(msg: str, level: str = "info"):
+    def _log(msg: str, level: str = "info") -> None:
         st.session_state["LOGS"].append((level, msg))
 
     col1, col2 = st.columns(2)
@@ -211,7 +202,7 @@ def _render():
                 files = collect_xlsx_files(uploaded_files)
                 if not files:
                     st.warning("업로드된 .xlsx 파일이 없습니다.")
-                # 실제 타깃 스프레드시트 확인 로그
+                # 대상 스프레드시트 로그
                 try:
                     sh = open_sheet_by_env()
                     tgt_url = getattr(sh, "url", "")
@@ -242,33 +233,24 @@ def _render():
     # 로그 출력
     st.subheader("실행 로그")
     if st.session_state["LOGS"]:
-        lines = []
+        lines: List[str] = []
         for level, msg in st.session_state["LOGS"]:
-            cls = {
-                "success": "color: #2E7D32;",
-                "error": "color: #C62828;",
-                "info": "color: #1565C0;",
-            }.get(level, "color: #1565C0;")
-            lines.append(f'<div style="{cls}">• {msg}</div>')
-        st.markdown(
-            '<div style="background:#F9F9F9;border:1px solid #eee;border-radius:8px;padding:12px;max-height:360px;overflow:auto">' +
-            "
-".join(lines) +
-            "</div>",
-            unsafe_allow_html=True,
+            color = {"success": "#2E7D32", "error": "#C62828", "info": "#1565C0"}.get(level, "#1565C0")
+            lines.append(f'<div style="color:{color}">• {msg}</div>')
+        html = (
+            '<div style="background:#F9F9F9;border:1px solid #eee;border-radius:8px;padding:12px;max-height:360px;overflow:auto">'
+            + "\n".join(lines)
+            + "</div>"
         )
+        st.markdown(html, unsafe_allow_html=True)
     else:
         st.info("아직 실행 로그가 없습니다.")
 
 
-# ============================================================
-# Streamlit 페이지 엔트리포인트
-# ============================================================
-
-def run():
-    """멀티 페이지 환경에서 사용되는 공개 엔트리포인트.
-    pages/2_Copy Template.py 등이 `from item_uploader.app import run` 으로 가져다 씁니다.
-    """
+# ------------------------------
+# 공개 엔트리포인트 (pages/*에서 import)
+# ------------------------------
+def run() -> None:
     _render()
 
 
