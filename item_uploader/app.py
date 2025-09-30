@@ -68,7 +68,7 @@ def _sidebar_settings() -> None:
     st.session_state.setdefault("OVERRIDE_GOOGLE_SHEET_KEY", "")
     st.session_state.setdefault("IMAGE_HOSTING_URL_STATE", get_env("IMAGE_HOSTING_URL") or "")
 
-    # URL 파라미터 복원 → 세션
+    # URL 파라미터 복원 → 세션 (최초에만)
     if (not st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY")) and params.get("main"):
         v = params["main"][0] if isinstance(params["main"], list) else params["main"]
         st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = v
@@ -76,11 +76,13 @@ def _sidebar_settings() -> None:
         v = params["img"][0] if isinstance(params["img"], list) else params["img"]
         st.session_state["IMAGE_HOSTING_URL_STATE"] = (v or "").rstrip("/")
 
-    # 입력창 = 세션값으로 항상 동기화 (위젯 생성 이전에만 대입)
-    st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
-    st.session_state["IMAGE_HOSTING_URL_INPUT"] = (
-        st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
-    )
+    # ⚠️ 입력창: "존재하지 않을 때만" 초기화 (Enter로 인한 rerun에서 타이핑 유지)
+    if "OVERRIDE_GOOGLE_SHEET_KEY_INPUT" not in st.session_state:
+        st.session_state["OVERRIDE_GOOGLE_SHEET_KEY_INPUT"] = st.session_state.get("OVERRIDE_GOOGLE_SHEET_KEY", "")
+    if "IMAGE_HOSTING_URL_INPUT" not in st.session_state:
+        st.session_state["IMAGE_HOSTING_URL_INPUT"] = (
+            st.session_state.get("IMAGE_HOSTING_URL_STATE") or get_env("IMAGE_HOSTING_URL") or ""
+        )
 
     with st.sidebar:
         st.markdown("### 설정")
@@ -117,11 +119,16 @@ def _sidebar_settings() -> None:
                     else:
                         st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
 
-                    # 3) 딥링크 갱신 및 재렌더
+                    # 3) 딥링크 갱신
                     set_query_params(
                         main=st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"],
                         img=st.session_state["IMAGE_HOSTING_URL_STATE"],
                     )
+
+                    # 4) 다음 렌더에서 입력창을 최신 상태로 재초기화하기 위해 INPUT 키 제거 후 rerun
+                    st.session_state.pop("OVERRIDE_GOOGLE_SHEET_KEY_INPUT", None)
+                    st.session_state.pop("IMAGE_HOSTING_URL_INPUT", None)
+
                     st.toast("설정이 적용되었습니다 ✅")
                     st.rerun()
                 except Exception as e:
@@ -130,7 +137,13 @@ def _sidebar_settings() -> None:
             if st.button("초기화"):
                 st.session_state["OVERRIDE_GOOGLE_SHEET_KEY"] = ""
                 st.session_state["IMAGE_HOSTING_URL_STATE"] = get_env("IMAGE_HOSTING_URL") or ""
+
                 set_query_params(main="", img=st.session_state["IMAGE_HOSTING_URL_STATE"])
+
+                # 입력창을 초기 표시값으로 되돌리기 위해 키 제거
+                st.session_state.pop("OVERRIDE_GOOGLE_SHEET_KEY_INPUT", None)
+                st.session_state.pop("IMAGE_HOSTING_URL_INPUT", None)
+
                 st.toast("설정이 초기화되었습니다")
                 st.rerun()
 
