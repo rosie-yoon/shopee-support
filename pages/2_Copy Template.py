@@ -3,8 +3,6 @@ from pathlib import Path
 import sys
 import streamlit as st
 
-st.set_page_config(page_title="Copy Template", layout="wide")
-
 # 프로젝트 루트(shopee)를 임포트 경로에 추가
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
