@@ -9,6 +9,4 @@ if str(ROOT) not in sys.path:
 
 from image_compose.app import run as image_compose_run  # 폴더명이 image_compose 여야 함
 
-st.set_page_config(page_title="Cover Image", layout="wide")
-
 image_compose_run()
