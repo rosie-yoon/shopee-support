@@ -170,7 +170,7 @@ def read_xlsx_values(bio: BytesIO, logs: Optional[List[str]] = None, debug: bool
 
 
 # ------------------------------------------------------
-# Google Sheet 쓰기 (기존 로직 유지)
+# Google Sheet 쓰기 (API 호출 최적화)
 # ------------------------------------------------------
 def _write_values_to_sheet(sh: gspread.Spreadsheet, tab: str, values: List[List], logs: List[str]) -> None:
     rows = len(values)
@@ -183,6 +183,7 @@ def _write_values_to_sheet(sh: gspread.Spreadsheet, tab: str, values: List[List]
 
     try:
         ws = safe_worksheet(sh, tab)
+        # ★ API 호출 1: 시트 전체 클리어
         with_retry(lambda: ws.clear())
     except Exception:
         ws = with_retry(lambda: sh.add_worksheet(title=tab, rows=max(rows + 10, 100), cols=max(cols + 5, 26)))
@@ -190,15 +191,11 @@ def _write_values_to_sheet(sh: gspread.Spreadsheet, tab: str, values: List[List]
     if ws.row_count < rows or ws.col_count < cols:
         with_retry(lambda: ws.resize(rows=rows + 10, cols=cols + 5))
 
-    chunk_rows = int(os.getenv("UPLOAD_CHUNK_ROWS", "0") or "0")
-    if chunk_rows and chunk_rows > 0:
-        for i in range(0, rows, chunk_rows):
-            chunk = values[i:i + chunk_rows]
-            start_a1 = rowcol_to_a1(i + 1, 1)
-            with_retry(lambda: ws.update(start_a1, chunk, raw=True))
-    else:
-        end_a1 = rowcol_to_a1(rows, cols)
-        with_retry(lambda: ws.update(f"A1:{end_a1}", values, raw=True))
+    # [수정] 문제가 되던 chunk 로직을 제거하고, 항상 한 번에 모든 데이터를 쓰는 방식으로 변경
+    # 이렇게 하면 데이터가 많아도 단 한 번의 API 호출로 모든 쓰기가 완료됩니다.
+    end_a1 = rowcol_to_a1(rows, cols)
+    # ★ API 호출 2: 데이터 전체 쓰기
+    with_retry(lambda: ws.update(f"A1:{end_a1}", values, raw=True))
 
     logs.append(f"[OK] {tab}: {rows}x{cols} 적용 완료")
 

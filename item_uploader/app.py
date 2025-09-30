@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import time
 from typing import Optional
 
 import streamlit as st
@@ -290,6 +291,10 @@ h1, h2, h3, h5 { font-weight: 700; }
                     if any("[OK]" in log for log in logs):
                         st.session_state.upload_success = True
                         st.write("✅ 파일 업로드 완료!")
+                        
+                        # <-- 2. 아래 두 라인을 추가하세요.
+                        st.write("잠시 대기 후 자동화를 시작합니다...")
+                        time.sleep(2)
                     else:
                         status.update(label="업로드 실패", state="error", expanded=True)
                         st.error("파일을 Google Sheets에 반영하는 데 실패했습니다. 로그를 확인하세요.")
