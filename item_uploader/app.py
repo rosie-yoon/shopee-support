@@ -247,73 +247,67 @@ h1, h2, h3, h5 { font-weight: 700; }
     # ---- 메인 앱 ----
     def main_application():
         st.markdown(
-            "<p>아래 영역에 BASIC, MEDIA, SALES 엑셀 파일을 업로드하고 샵 코드를 입력한 후, 실행 버튼을 눌러주세요.</p>",
+            "<p>파일 업로드 후, 자동화 실행 버튼을 눌러주세요.</p>",
             unsafe_allow_html=True,
         )
 
-        # --- 입력 영역 ---
-        st.subheader("1. 파일 및 샵 코드 입력")
+        # --- 1. 파일 업로드 영역 ---
+        st.subheader("1. 파일 업로드")
         uploaded_files = st.file_uploader(
-            "BASIC, MEDIA, SALES 파일을 한 번에 선택하거나 드래그 앤 드롭하세요.",
+            "BASIC, MEDIA, SALES 파일을 선택하세요.",
             type="xlsx",
             accept_multiple_files=True,
             label_visibility="collapsed",
         )
 
-        shop_code = st.text_input(
-            "샵 코드 입력",
-            placeholder="예: RORO, 01 등 샵 코드를 입력하세요. 커버 이미지 파일의 코드와 동일해야합니다.",
-            key="shop_code_input",
-        )
-
-        is_ready = bool(uploaded_files and shop_code)
-
-        if st.button("🚀 파일 업로드 및 실행", key="run_all", disabled=not is_ready):
+        if st.button("📁 파일 업로드", key="upload_files", disabled=not uploaded_files):
             # 상태 초기화
             st.session_state.upload_success = False
             st.session_state.automation_success = False
             st.session_state.download_file = None
 
-            with st.status("자동화 실행 중...", expanded=True) as status:
+            with st.spinner("Shop SKU 파일을 Google Sheets에 업로드 중입니다..."):
                 try:
-                    # 1) 업로드 반영
-                    st.write("1/3 - Shop SKU 파일 업로드 중...")
                     files_dict = collect_xlsx_files(uploaded_files)
                     if len(files_dict) < 3:
-                        st.session_state.upload_success = False
-                        status.update(label="업로드 실패", state="error", expanded=True)
-                        st.error(
-                            f"파일 3개(BASIC, MEDIA, SALES)를 모두 업로드해야 합니다. (현재 {len(files_dict)}개)"
-                        )
+                        st.error(f"파일 3개(BASIC, MEDIA, SALES)를 모두 업로드해야 합니다. (현재 {len(files_dict)}개)")
                         return
 
                     logs = apply_uploaded_files(files_dict)
+                    
                     if any("[OK]" in log for log in logs):
                         st.session_state.upload_success = True
-                        st.write("✅ 파일 업로드 완료!")
-                        
-                        # <-- 2. 아래 두 라인을 추가하세요.
-                        st.write("잠시 대기 후 자동화를 시작합니다...")
-                        time.sleep(2)
+                        st.success("✅ 파일 업로드가 성공적으로 완료되었습니다! 이제 자동화를 실행할 수 있습니다.")
                     else:
-                        status.update(label="업로드 실패", state="error", expanded=True)
-                        st.error("파일을 Google Sheets에 반영하는 데 실패했습니다. 로그를 확인하세요.")
+                        st.error("파일 업로드에 실패했습니다. 아래 로그를 확인하세요.")
                         st.json(logs)
-                        return
 
-                    # 2) 자동화
-                    st.write("2/3 - 템플릿 생성 자동화 진행 중... (Step 1~6)")
-                    
-                    # --- 디버깅 로그 추가 ---
-                    print("\n[DEBUG] ShopeeAutomation 클래스 인스턴스 생성을 시작합니다...")
+                except Exception as e:
+                    st.error("파일 업로드 중 심각한 오류가 발생했습니다.")
+                    st.exception(e)
+
+        st.divider()
+
+        # --- 2. 자동화 실행 영역 ---
+        st.subheader("2. 자동화 실행 및 다운로드")
+        shop_code = st.text_input(
+            "샵 코드 입력",
+            placeholder="예: RORO, 01 등 샵 코드를 입력하세요.",
+            key="shop_code_input",
+        )
+        
+        # 파일 업로드가 성공했고, 샵 코드가 입력되었을 때만 실행 버튼 활성화
+        is_ready_for_automation = st.session_state.get("upload_success", False) and shop_code
+
+        if st.button("🚀 자동화 실행", key="run_automation", disabled=not is_ready_for_automation):
+            with st.status("자동화 실행 중...", expanded=True) as status:
+                try:
+                    # 자동화 클래스 인스턴스화
                     automation = ShopeeAutomation()
-                    print("[DEBUG] ShopeeAutomation 클래스 인스턴스 생성 완료.")
-                    # --- 여기까지 ---
-
                     progress_bar = st.progress(0, text="자동화 단계를 시작합니다...")
-                    # ... (이후 코드)
                     log_container = st.empty()
 
+                    # 자동화 실행
                     success, results = automation.run_all_steps_with_progress(
                         progress_bar, log_container, shop_code
                     )
@@ -324,8 +318,8 @@ h1, h2, h3, h5 { font-weight: 700; }
                         st.error("자동화 실행 중 오류가 발생했습니다. 위 로그를 확인하세요.")
                         return
 
-                    # 3) 다운로드 파일 생성
-                    st.write("3/3 - 최종 엑셀 파일 생성 중... (Step 7)")
+                    # 다운로드 파일 생성
+                    st.write("최종 엑셀 파일 생성 중...")
                     download_data = automation.run_step7_generate_download()
 
                     if download_data:
@@ -336,17 +330,14 @@ h1, h2, h3, h5 { font-weight: 700; }
                         st.session_state.automation_success = False
                         status.update(label="다운로드 파일 생성 실패", state="error", expanded=True)
                         st.error("최종 엑셀 파일을 생성하는 데 실패했습니다.")
-
+                
                 except Exception as e:
                     status.update(label="치명적인 오류 발생", state="error", expanded=True)
                     st.error("프로그램 실행 중 예상치 못한 심각한 오류가 발생했습니다.")
                     st.exception(e)
 
-        st.divider()
-
-        # --- 다운로드 섹션 ---
-        st.subheader("2. 최종 파일 다운로드")
-        if st.session_state.automation_success and st.session_state.download_file:
+        # 다운로드 버튼은 자동화 성공 시에만 표시
+        if st.session_state.get("automation_success", False) and st.session_state.get("download_file"):
             st.download_button(
                 label="⬇️ 템플릿 파일 다운로드 (.xlsx)",
                 data=st.session_state.download_file,
@@ -355,6 +346,7 @@ h1, h2, h3, h5 { font-weight: 700; }
             )
         else:
             st.info("자동화가 성공적으로 완료되면 여기에 다운로드 버튼이 나타납니다.")
+
 
     # ---- 라우팅 ----
     main_application()
