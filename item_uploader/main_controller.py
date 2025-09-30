@@ -13,11 +13,16 @@ class ShopeeAutomation:
     Streamlit UI와 실제 로직 사이의 다리 역할을 합니다.
     """
     def __init__(self):
+        # --- 디버깅 로그 추가 ---
+        print("[ ShopeeAutomation ] 클래스 초기화를 시작합니다.")
         try:
             load_env()
+            print("[ ShopeeAutomation ] Google Sheets 연결을 시도합니다...")
             self.sh = open_sheet_by_env()
             self.ref = open_ref_by_env()
+            print("[ ShopeeAutomation ] Google Sheets 연결 성공 및 클래스 초기화 완료.")
         except Exception as e:
+            print(f"[ ShopeeAutomation ] 초기화 중 심각한 오류 발생: {e}") # 터미널 로그용
             st.error(f"Google Sheets 연결에 실패했습니다: {e}")
             st.stop()
 
@@ -82,7 +87,16 @@ class ShopeeAutomation:
         return all_success, results
 
     def run_step1_build_template(self):
-        automation_steps.run_step_1(self.sh, self.ref)
+        # --- 디버깅 로그 추가 ---
+        print("[ Step 1 ] 'run_step1_build_template' 함수가 호출되었습니다.")
+        try:
+            print("[ Step 1 ] 'automation_steps.run_step_1' 실행 직전입니다.")
+            automation_steps.run_step_1(self.sh, self.ref)
+            print("[ Step 1 ] 'automation_steps.run_step_1' 실행이 성공적으로 완료되었습니다.")
+        except Exception as e:
+            print(f"[ Step 1 ] 'automation_steps.run_step_1' 실행 중 심각한 오류가 발생했습니다: {e}")
+            # 발생한 오류를 다시 상위로 보내 UI에 표시되도록 합니다.
+            raise e
 
     def run_step2_fill_defaults(self):
         automation_steps.run_step_2(self.sh, self.ref)
@@ -103,4 +117,3 @@ class ShopeeAutomation:
 
     def run_step7_generate_download(self):
         return automation_steps.run_step_7(self.sh)
-
